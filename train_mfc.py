@@ -155,8 +155,6 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
         mfc = MFCAugmentEA(augmentation_space='rand')
     elif 'trivial' in config['aug']:
         mfc = MFCAugment(augmentation_space='trivial')
-    feature_extractor = FeaturesExtractor()
-    optimal_policy = []
     # if 'rect' in config['dataset']:
     #     for _ in range(5):
     #         optimal_policy.extend(mfc.find_optimal_policy(traintest_dataset, feature_extractor, max_iter=80))
