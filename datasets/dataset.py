@@ -1,23 +1,29 @@
 import cv2
 import numpy as np
 import torch
+import random
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.utils.data import Dataset
 from PIL import Image
 
 class Mydata(Dataset):
-    def __init__(self, file_list, labels, transform = None):
+    def __init__(self, file_list, labels, transform = None, mfc=False):
         self.full_filenames = file_list
         self.labels = labels
         self.transform = transform
+        self.mfc = False
     
     def __len__(self):
         return len(self.full_filenames)
     
     def __getitem__(self, idx):
         image = Image.open(self.full_filenames[idx])
-        image = self.transform(image)
+        if self.mfc:
+            transform = self.transform[random.randint(0, len(self.transform) - 1)]
+        else:
+            transform = self.transform
+        image = transform(image)
         label = self.labels[idx]
         return image, label
 
@@ -27,6 +33,10 @@ class Mydata(Dataset):
     def get_labels(self):
         return self.labels
     
+    def update_transform(self, transform, mfc):
+        self.transform = transform
+        self.mfc = mfc
+
 class MyDataloader:
     def __init__(self,dataset,batch_size=1,shuffle=False,num_workers=1):
         self.num_workers = num_workers

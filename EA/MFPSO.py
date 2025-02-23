@@ -2,8 +2,14 @@ import numpy as np
 import time
 from scipy.optimize import minimize
 from EA.Particle import Particle
+from tqdm import tqdm
 
-def MFPSO(Tasks, pop, gen, rmp, reps, params):
+def MFPSO(Tasks, options, params):
+    pop = options['popsize']
+    gen = options['maxgen']
+    rmp = options['rmp']
+    reps = options['reps']
+
     if pop % 2 != 0:
         pop += 1
     
@@ -34,8 +40,8 @@ def MFPSO(Tasks, pop, gen, rmp, reps, params):
     EvBestFitness = np.zeros((no_of_tasks * reps, gen))  # 到目前为止找到的最佳适应度
     TotalEvaluations = np.zeros((reps, gen))  # 到目前为止的任务评估总数
     bestobj = np.inf * np.ones(no_of_tasks) # 到目前为止找到的任务最优目标值
-    
-    for rep in range(reps):
+    bestPop = np.zeros((reps, pop), dtype=object)
+    for rep in tqdm(range(reps)):
         population = [Particle(D_multitask, no_of_tasks) for _ in range(pop)]
         
         for i in range(pop):
@@ -51,7 +57,7 @@ def MFPSO(Tasks, pop, gen, rmp, reps, params):
             sorted_indices = np.argsort(factorial_cost)
             population = [population[i] for i in sorted_indices]  # 根据当前任务的factorial_cost重新排序种群
             for j in range(pop):
-                population[j].factorial_ranks[i] = j + 1
+                population[j].factorial_ranks[i] = j
             bestobj[i] = population[0].factorial_costs[i]
             gbest = np.array([population[0].rnvec for _ in range(no_of_tasks)])
             EvBestFitness[i + 2 * (rep - 1), 0] = bestobj[i]
@@ -59,23 +65,24 @@ def MFPSO(Tasks, pop, gen, rmp, reps, params):
         
         for i in range(pop):
             min_rank = np.min(population[i].factorial_ranks)
-            equivalent_skills = np.where(population[i].factorial_ranks == min_rank)[0]+1
+            equivalent_skills = np.where(population[i].factorial_ranks == min_rank)[0]
             if len(equivalent_skills) > 1:  # 如果在多个任务上有最佳适应度，随机选择一个并将其factorial_costs设置为inf
                 population[i].skill_factor = equivalent_skills[np.random.randint(len(equivalent_skills))]
-                tmp = population[i].factorial_costs[population[i].skill_factor-1]
+                tmp = population[i].factorial_costs[population[i].skill_factor]
                 population[i].factorial_costs = np.inf * np.ones(no_of_tasks)
-                population[i].factorial_costs[population[i].skill_factor-1] = tmp
+                population[i].factorial_costs[population[i].skill_factor] = tmp
                 population[i].pbestFitness = tmp
             else:  # 否则，只需设置skill_factor并将其factorial_costs设置为inf
-                population[i].skill_factor = np.argmin(population[i].factorial_rank)+1
-                tmp = population[i].factorial_costs[population[i].skill_factor-1]
+                population[i].skill_factor = np.argmin(population[i].factorial_ranks)
+                tmp = population[i].factorial_costs[population[i].skill_factor]
                 population[i].factorial_costs = np.inf * np.ones(no_of_tasks)
-                population[i].factorial_costs[population[i].skill_factor-1] = tmp
+                population[i].factorial_costs[population[i].skill_factor] = tmp
                 population[i].pbestFitness = tmp
         
         ite = 1
         noImpove = 0
         while ite <= gen:
+            print(f'Generation: {ite}\t Repeat: {rep}\t Best Fitness: {bestobj}')
             w1 = wmax - (wmax - wmin) * ite / 1000
             
             if ite % 10 == 0 and noImpove >= 20:
@@ -106,17 +113,17 @@ def MFPSO(Tasks, pop, gen, rmp, reps, params):
                 if population[0].factorial_costs[i] <= bestobj[i]:
                     bestobj[i] = population[0].factorial_costs[i]                   
                     gbest[i, :] = population[0].rnvec
-                    bestInd_data[rep, i] = population[0]
+                    bestInd_data[i, ] = population[0]
                     noImpove = 0
                 else:
                     noImpove += 1
-                EvBestFitness[i + 2 * (rep - 1), ite + 1] = bestobj[i]
-                               
+                EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
             ite += 1
+        bestPop[rep, :] = population           
         
     data_MFPSO = {
         'EvBestFitness': EvBestFitness,
         'bestInd_data': bestInd_data,
         'TotalEvaluations': TotalEvaluations
     }
-    return data_MFPSO
+    return bestPop

@@ -10,24 +10,25 @@ class Particle:
         self.factorial_costs = np.inf * np.ones(no_of_tasks)
         self.factorial_ranks = np.zeros(no_of_tasks)
         self.scalar_fitness = 0
-        self.skill_factor = 0
+        self.skill_factor = -1
+        self.no_of_tasks = no_of_tasks
 
     def evaluate(self, Tasks, no_of_tasks, params):
         calls = 0
         funcCount = 1
-        if self.skill_factor == 0:
+        if self.skill_factor == -1:
             for i in range(no_of_tasks):
                 params.update({'task_id':i})
-                cost, _ = Tasks[i].evaluate(self.rnvec, params)
+                cost = Tasks[i].evaluate(self.rnvec, params)
                 self.factorial_costs[i] = cost
                 calls += funcCount
         else:
             self.factorial_costs[:] = np.inf
             for i in range(no_of_tasks):
-                if self.skill_factor == i + 1:
+                if self.skill_factor == i:
                     params.update({'task_id':i})
-                    cost, self.rnvec = Tasks[self.skill_factor - 1].evaluate(self.rnvec, params)
-                    self.factorial_costs[self.skill_factor - 1] = cost
+                    cost = Tasks[self.skill_factor].evaluate(self.rnvec, params)
+                    self.factorial_costs[self.skill_factor] = cost
                     calls = funcCount
                     break
         return calls
@@ -45,8 +46,8 @@ class Particle:
 
     # pbest update
     def pbestUpdate(self):
-        if self.factorial_costs[self.skill_factor - 1] < self.pbestFitness:
-            self.pbestFitness = self.factorial_costs[self.skill_factor - 1]
+        if self.factorial_costs[self.skill_factor] < self.pbestFitness:
+            self.pbestFitness = self.factorial_costs[self.skill_factor]
             self.pbest = self.rnvec.copy()
         return self
 
@@ -59,17 +60,20 @@ class Particle:
     # velocity update
     def velocityUpdate(self, gbest, rmp, w1, c1, c2, c3):
         len_velocity = len(self.velocity)
+        idx = list(range(self.no_of_tasks))
+        idx.remove(self.skill_factor)
+        rand_idx = int(np.random.choice(idx, 1)[0])
         if np.random.rand() < rmp:
             self.velocity = w1 * self.velocity + \
                             c1 * np.random.rand(len_velocity) * (self.pbest - self.rnvec) + \
-                            c2 * np.random.rand(len_velocity) * (gbest[self.skill_factor - 1] - self.rnvec) + \
-                            c3 * np.random.rand(len_velocity) * (gbest[2 // self.skill_factor - 1] - self.rnvec)
+                            c2 * np.random.rand(len_velocity) * (gbest[self.skill_factor] - self.rnvec) + \
+                            c3 * np.random.rand(len_velocity) * (gbest[rand_idx] - self.rnvec)
             if np.random.rand() < 0.5:
-                self.skill_factor = 2 // self.skill_factor
+                self.skill_factor = rand_idx
         else:
             self.velocity = w1 * self.velocity + \
                             c1 * np.random.rand(len_velocity) * (self.pbest - self.rnvec) + \
-                            c2 * np.random.rand(len_velocity) * (gbest[self.skill_factor - 1] - self.rnvec)
+                            c2 * np.random.rand(len_velocity) * (gbest[self.skill_factor] - self.rnvec)
         return self
 
     def velocityUpdate_SOO(self, gbest, w1, c1, c2):

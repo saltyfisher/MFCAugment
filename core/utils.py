@@ -2,17 +2,74 @@ import numpy as np
 
 from scipy.spatial.distance import cosine
 from scipy.stats import entropy
+from scipy import linalg
+import numpy as np
+from scipy import linalg
+
+def check_matrix_dimensions(p_sigma, q_sigma):
+    if p_sigma.shape != q_sigma.shape:
+        raise ValueError("p_sigma 和 q_sigma 的维度必须相同")
+    if p_sigma.shape[0] != p_sigma.shape[1]:
+        raise ValueError("p_sigma 和 q_sigma 必须是方阵")
+
+def ensure_positive_definite(sigma, min_value=1e-6):
+    # 确保对角线元素不小于一个合理的最小值
+    sigma = np.maximum(sigma, min_value * np.eye(sigma.shape[0]))
+    
+    # 检查矩阵是否为正定矩阵
+    try:
+        np.linalg.cholesky(sigma)
+    except np.linalg.LinAlgError:
+        # 如果不是正定矩阵，尝试通过添加一个小的正数到对角线来修复
+        eigenvalues = np.linalg.eigvalsh(sigma)
+        smallest_eigenvalue = np.min(eigenvalues)
+        if smallest_eigenvalue <= 0:
+            correction = abs(smallest_eigenvalue) + min_value
+            sigma += correction * np.eye(sigma.shape[0])
+    return sigma
+
+def cholesky_decomposition(sigma):
+    try:
+        return linalg.cholesky(sigma, lower=True)
+    except linalg.LinAlgError as e:
+        raise ValueError(f"Cholesky 分解失败: {e}")
+
+def log_determinant(sigma):
+    sign, logdet = np.linalg.slogdet(sigma)
+    if sign <= 0:
+        raise ValueError("行列式必须为正")
+    return logdet
 
 def KL_loss(p_mu, p_sigma, q_mu, q_sigma):
-    p_sigma = p_sigma + 1e-10*np.eye(p_sigma.shape[0])
-    q_sigma = q_sigma + 1e-10*np.eye(q_sigma.shape[0])
+    # 检查输入矩阵维度
+    check_matrix_dimensions(p_sigma, q_sigma)
+    
+    # 确保矩阵为正定矩阵
+    p_sigma = ensure_positive_definite(p_sigma)
+    q_sigma = ensure_positive_definite(q_sigma)
+    
     n = p_sigma.shape[0]
-    q_sigma_inv = np.linalg.inv(q_sigma)
-    l1 = (p_mu-q_mu).T @ q_sigma_inv @ (p_mu-q_mu)
-    l2 = np.log(np.linalg.det(q_sigma)/np.linalg.det(p_sigma))
-    l3 = np.trace(q_sigma_inv @ p_sigma)
+    
+    # 计算 Cholesky 分解
+    L_q = cholesky_decomposition(q_sigma)
+    L_p = cholesky_decomposition(p_sigma)
+    
+    # 计算 (p_mu - q_mu).T @ q_sigma_inv @ (p_mu - q_mu)
+    diff = p_mu - q_mu
+    l1 = diff.T @ linalg.solve_triangular(L_q, linalg.solve_triangular(L_q.T, diff, lower=True), lower=True)
+    
+    # 计算 log(det(q_sigma) / det(p_sigma))
+    logdet_q = log_determinant(q_sigma)
+    logdet_p = log_determinant(p_sigma)
+    l2 = logdet_q - logdet_p
+    
+    # 计算 trace(q_sigma_inv @ p_sigma)
+    l3 = np.trace(linalg.solve(q_sigma, p_sigma))
+    
     loss = l1 + l2 + l3 - n
-    return loss/2
+    return loss / 2
+
+# 其他函数保持不变
 
 def KL_loss_sum(gm1_mu, gm1_sigma, gm2_mu, gm2_sigma, gm1_alpha, gm2_alpha):
     loss = []

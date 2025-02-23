@@ -10,8 +10,11 @@ import multiprocessing as mp
 import yaml
 import subprocess
 import time
+import torchvision
 
 # from core.MFCAugment import MFCAugment
+from PIL import Image
+from torchvision import transforms
 from sklearnex import patch_sklearn
 from copy import deepcopy
 from pathlib import Path
@@ -31,6 +34,7 @@ from metrics import accuracy, Accumulator, f1_score,precision_score,recall_score
 from warmup_scheduler import GradualWarmupScheduler
 from common import get_logger
 from core.MFCAugment import MFCAugment
+from core.augmentations import MyAugment
 
 logger = get_logger('MFC')
 logger.setLevel(logging.DEBUG)
@@ -99,15 +103,12 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     save_name = Path(args.config).stem
     save_path = str(Path(save_path).joinpath(save_name+f'_itrs{itrs+1}'))
     writers = [SummaryWriter(log_dir=f'./logs/mfc/{save_path}/{x}/') for x in ['train', 'valid', 'test']]
-    model = get_model(config['model'], config['batch'], num_class(config['dataset']), writer=writers[0])
+    model = get_model(config['model'], args.batch_size, num_class(config['dataset']), writer=writers[0])
     if args.use_parallel:
         model = model.to(f'cuda:{gpu_id}')
     else:
         model = model.to(f'cuda:{args.device}')
 
-    traintestloader,testloader,trainvalloaders,valdloaders,traintest_dataset,trainval_datasets,val_datasets,test_dataset = get_data(config,config['dataset'], dataroot,config['batch'])
-    rawdataloader = deepcopy(valdloaders[0])
-    rawtrainloader = deepcopy(traintestloader)
     criterion = nn.CrossEntropyLoss()
     if config['optimizer']['type'] == 'sgd':
         optimizer = optim.SGD(
@@ -142,34 +143,28 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     max_epoch = config['epoch']
     epoch_start = 1
     rs = {'train':[],'test':[]}
-
     if only_eval:
         max_epoch = 0
     best_f1 = 0
-    optimal_params = {'model':[],'optimizer':[],'epoch':[]}
 
-    feature_list = ['brightness', 'contrast', 'blurrness', 'hed']
+    traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
     if args.MFC:
-        MFCAugment(traintest_dataset)
-    if 'rand' in config['aug']:
-        mfc = MFCAugmentEA(augmentation_space='rand')
-    elif 'trivial' in config['aug']:
-        mfc = MFCAugment(augmentation_space='trivial')
-    # if 'rect' in config['dataset']:
-    #     for _ in range(5):
-    #         optimal_policy.extend(mfc.find_optimal_policy(traintest_dataset, feature_extractor, max_iter=80))
-    #     if 'rand' in config['aug']: 
-    #         traintestloader.dataset.transform.transforms.insert(0, MyRandAugment(optimal_policy))
-    #     elif 'trivial' in config['aug']:
-    #         traintestloader.dataset.transform.transforms.insert(0, MyTrivialAugment(optimal_policy))
-    # else:
-    #     for dataset in val_datasets:
-    #         optimal_policy.extend(mfc.find_optimal_policy(dataset, feature_extractor, max_iter=10))
-    #     if 'rand' in config['aug']: 
-    #         traintestloader.dataset.transform.transforms.insert(0, MyRandAugment(optimal_policy))
-    #     elif 'trivial' in config['aug']:
-    #         traintestloader.dataset.transform.transforms.insert(0, MyTrivialAugment(optimal_policy))
-
+        policy_subset = MFCAugment(traintest_dataset,args)
+        optimal_policy = []
+        for p in policy_subset:
+            policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
+                                                    transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
+                                                    transforms.ToTensor()])
+            if 'rect' in config['dataset']:
+                policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
+            optimal_policy.append(policy)
+        traintest_dataset.update_transform(optimal_policy, True)
+    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    if 'breakhis' in config['dataset']:
+        testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    else:
+        testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+        
     for epoch in tqdm(range(epoch_start, max_epoch + 1),desc=f"Task{task_id} Iter{itrs}"):
         model.train()     
 
@@ -237,8 +232,12 @@ if __name__ == '__main__':
         for f in all_config_files:
             with open(str(f),'r') as file:
                 cfg = yaml.load(file,Loader=yaml.FullLoader)
-            if 'vgg' not in cfg['model']['type']:
-                continue
+            if args.dataset != '':
+                if args.dataset not in cfg['dataset']:
+                    continue
+            if args.MFC:
+                if 'rand' in cfg['aug'] or 'trivial' in cfg['aug']:
+                    continue    
             new_args = deepcopy(args)
             new_args.config = str(f)
             all_args.append(new_args)
@@ -255,7 +254,10 @@ if __name__ == '__main__':
                 # if os.path.exists(save_path+'.pth'):
                 #     continue
                 print(save_name)
-                train_val(0, 0, args, cfg, itrs, '../data','./params_save/mfc')
+                if args.MFC:                    
+                    train_val(0, 0, args, cfg, itrs, '../data','./params_save/mfc')
+                else:
+                    train_val(0, 0, args, cfg, itrs, '../data','./params_save')
 
                 # break
 
