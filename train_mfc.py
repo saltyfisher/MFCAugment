@@ -148,17 +148,9 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     best_f1 = 0
 
     traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
-    if args.MFC:
-        policy_subset = MFCAugment(traintest_dataset,args)
-        optimal_policy = []
-        for p in policy_subset:
-            policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
-                                                    transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
+    transform = torchvision.transforms.Compose([transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
                                                     transforms.ToTensor()])
-            if 'rect' in config['dataset']:
-                policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
-            optimal_policy.append(policy)
-        traintest_dataset.update_transform(optimal_policy, True)
+    traintest_dataset.update_transform(transform, False)
     traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
     if 'breakhis' in config['dataset']:
         testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
@@ -191,6 +183,24 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
                         'optimizer': optimizer.state_dict(),
                         'model': model.state_dict(),
                     }, save_path+'.pth')   
+
+    traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
+    if args.MFC:
+        policy_subset = MFCAugment(model, traintest_dataset,args)
+        optimal_policy = []
+        for p in policy_subset:
+            policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
+                                                    transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
+                                                    transforms.ToTensor()])
+            if 'rect' in config['dataset']:
+                policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
+            optimal_policy.append(policy)
+    traintest_dataset.update_transform(optimal_policy, True)
+    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    if 'breakhis' in config['dataset']:
+        testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    else:
+        testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
     del model    
     del rs

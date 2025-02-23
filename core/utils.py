@@ -1,10 +1,28 @@
 import numpy as np
+import torch
 
 from scipy.spatial.distance import cosine
 from scipy.stats import entropy
 from scipy import linalg
 import numpy as np
 from scipy import linalg
+
+def get_deepfeat(model_name, model, img):
+    extracted_feat = []
+    def hook_fn(model, input, output):
+        nonlocal extracted_feat
+        extracted_feat = output.detach()
+
+    if 'resnet18' in model_name:
+        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    
+    with torch.no_grad():
+        model(img)
+        
+    feat = extracted_feat.view(extracted_feat.size(0),-1)
+    hook_handle.remove()
+
+    return feat.cpu().numpy()
 
 def check_matrix_dimensions(p_sigma, q_sigma):
     if p_sigma.shape != q_sigma.shape:
