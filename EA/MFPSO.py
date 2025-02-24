@@ -3,7 +3,7 @@ import time
 from scipy.optimize import minimize
 from EA.Particle import Particle
 from tqdm import tqdm
-
+import joblib
 def MFPSO(Tasks, options, params):
     pop = options['popsize']
     gen = options['maxgen']
@@ -42,12 +42,18 @@ def MFPSO(Tasks, options, params):
     bestobj = np.inf * np.ones(no_of_tasks) # 到目前为止找到的任务最优目标值
     bestPop = np.zeros((reps, pop), dtype=object)
     for rep in tqdm(range(reps)):
-        population = [Particle(D_multitask, no_of_tasks) for _ in range(pop)]
+        population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
         
-        for i in range(pop):
-            calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
-        
-        fnceval_calls[rep] += np.sum(calls_per_individual)
+        results = joblib.Parallel(n_jobs=10, backend='loky')(
+            joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
+            for i in range(pop))
+        # st = time.time()
+        # for i in range(pop):
+        #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
+        # print(time.time()-st)
+        for r in results:
+            fnceval_calls[rep] += r[1]
+            population[r[2]] = r[0]
         TotalEvaluations[rep, 0] = fnceval_calls[rep]
         
         factorial_cost = np.zeros(pop)
@@ -98,9 +104,19 @@ def MFPSO(Tasks, options, params):
             for i in range(pop):
                 population[i].pbestUpdate()
             
-            for i in range(pop):            
-                calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)           
-            fnceval_calls[rep] += np.sum(calls_per_individual)                   
+            results = joblib.Parallel(n_jobs=10, backend='loky')(
+            joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
+            for i in range(pop))
+            # st = time.time()
+            # for i in range(pop):
+            #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
+            # print(time.time()-st)
+            for r in results:
+                fnceval_calls[rep] += r[1]
+                population[r[2]] = r[0]
+            # for i in range(pop):            
+            #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)           
+            # fnceval_calls[rep] += np.sum(calls_per_individual)                   
             
             factorial_cost = np.zeros(pop)
             for i in range(no_of_tasks):

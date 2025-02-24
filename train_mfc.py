@@ -141,7 +141,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
             after_scheduler=scheduler
         )
     max_epoch = config['epoch']
-    epoch_start = 1
+    epoch_start = 0
     rs = {'train':[],'test':[]}
     if only_eval:
         max_epoch = 0
@@ -156,8 +156,8 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
         testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     else:
         testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
-        
-    for epoch in tqdm(range(epoch_start, max_epoch + 1),desc=f"Task{task_id} Iter{itrs}"):
+    data_list = traintest_dataset.get_all_files()
+    for epoch in tqdm(range(epoch_start, max_epoch),desc=f"Task{task_id} Iter{itrs}"):
         model.train()     
 
         rs['train'].append(run_epoch(args,config,model, traintestloader, criterion, optimizer, desc_default='', epoch=epoch, writer=writers[0], verbose=0, scheduler=None,sample_pairing_loader=None))
@@ -184,23 +184,22 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
                         'model': model.state_dict(),
                     }, save_path+'.pth')   
 
-    traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
-    if args.MFC:
-        policy_subset = MFCAugment(model, traintest_dataset,args)
-        optimal_policy = []
-        for p in policy_subset:
-            policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
-                                                    transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
-                                                    transforms.ToTensor()])
-            if 'rect' in config['dataset']:
-                policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
-            optimal_policy.append(policy)
-    traintest_dataset.update_transform(optimal_policy, True)
-    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
-    if 'breakhis' in config['dataset']:
-        testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-    else:
-        testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+            if args.MFC:
+                policy_subset = MFCAugment(model, config, data_list, args)
+                optimal_policy = []
+                for p in policy_subset:
+                    policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
+                                                            transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
+                                                            transforms.ToTensor()])
+                    if 'rect' in config['dataset']:
+                        policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
+                    optimal_policy.append(policy)
+            traintest_dataset.update_transform(optimal_policy, True)
+            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+            if 'breakhis' in config['dataset']:
+                testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+            else:
+                testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
     del model    
     del rs
@@ -216,6 +215,7 @@ def run_python_file(args):
     return result.returncode
 
 if __name__ == '__main__':
+    # mp.set_start_method('spawn')
     patch_sklearn()
     args = initialize_setting()
     # C(args.config)

@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 class Particle:
-    def __init__(self, D, no_of_tasks):
+    def __init__(self, D, no_of_tasks, p_id):
         self.rnvec = np.random.rand(D)  # (genotype)--> decode to find design variables --> (phenotype)
         self.pbest = self.rnvec.copy()
         self.pbestFitness = np.inf
@@ -12,6 +12,7 @@ class Particle:
         self.scalar_fitness = 0
         self.skill_factor = -1
         self.no_of_tasks = no_of_tasks
+        self.p_id = p_id
 
     def evaluate(self, Tasks, no_of_tasks, params):
         calls = 0
@@ -31,7 +32,7 @@ class Particle:
                     self.factorial_costs[self.skill_factor] = cost
                     calls = funcCount
                     break
-        return calls
+        return self, calls, self.p_id
 
     def evaluate_SOO(self, Task, p_il, options):
         cost, self.rnvec, funcCount = fnceval(Task, self.rnvec, p_il, options)
