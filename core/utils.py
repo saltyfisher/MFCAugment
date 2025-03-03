@@ -23,7 +23,7 @@ def get_deepfeat(model_name, model, img):
     feat = extracted_feat.view(extracted_feat.size(0),-1)
     hook_handle.remove()
 
-    return feat.cpu().numpy().squeeze()
+    return feat
 
 def kde_kl_divergence(x, y, xbins=1000, epsilon=1e-10):
     """
@@ -42,6 +42,8 @@ def kde_kl_divergence(x, y, xbins=1000, epsilon=1e-10):
     x = np.atleast_1d(x)
     y = np.atleast_1d(y)
     
+    if len(x) == 0 or len(y) == 0:
+        return np.inf
     # 计算 KDE
     kde_x = gaussian_kde(x)
     kde_y = gaussian_kde(y)
@@ -62,7 +64,7 @@ def kde_kl_divergence(x, y, xbins=1000, epsilon=1e-10):
     
     return kl_div
 
-def kl_divergence_multivariate(x, y, xbins=1000):
+def kl_divergence_multivariate(x, y, xbins=1000, noise_level=1e-6):
     """
     计算两组多维样本之间的 KL 散度，使用 KDE 方法。
     
@@ -77,6 +79,8 @@ def kl_divergence_multivariate(x, y, xbins=1000):
     # 确保输入是 numpy 数组
     x = np.atleast_2d(x)
     y = np.atleast_2d(y)
+    x = x+np.random.normal(0, noise_level, x.shape)
+    y = y+np.random.normal(0, noise_level, y.shape)
     
     n_features = x.shape[1]
     

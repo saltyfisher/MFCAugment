@@ -71,10 +71,6 @@ def run_epoch(args, config, model, loader, loss_fn, optimizer, desc_default='', 
         if (steps-1) % config.get('step_optimizer_every', 1) == config.get('step_optimizer_nth_step', 0): # default is to step on the first step of each pack
             if optimizer:
                 optimizer.step()
-        #print(f"Time for forward/backward {time()-fb_time}")
-        # if steps % 2 == 0:
-        #     metrics.add('eval_top1', top1[0].item() * len(data)) # times 2 since it is only recorded every sec step
-        #     eval_cnt += len(data)
         cnt += len(data)
 
         if scheduler is not None:
@@ -185,7 +181,11 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
                     }, save_path+'.pth')   
 
             if args.MFC:
-                policy_subset = MFCAugment(model, config, data_list, args)
+                if 'lym' in config['dataset']:
+                    cluster_num = 3
+                if 'breakhis8' in config['dataset']:
+                    cluster_num = 8
+                policy_subset = MFCAugment(model, config, data_list, args, n_clusters=cluster_num)
                 optimal_policy = []
                 for p in policy_subset:
                     policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
@@ -221,21 +221,8 @@ if __name__ == '__main__':
     # C(args.config)
     dataset_names = ['lym','breakhis40X','breakhis100X','breakhis200X','breakhis400X']
     for d in dataset_names:
-        args.dataset = d
-        if 'lym' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('lym*'))
-        elif 'lc' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('lc*'))
-        elif 'breakhis40X' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('*40X*'))
-        elif 'breakhis100X' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('*100X*'))
-        elif 'breakhis200X' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('*200X*'))
-        elif 'breakhis400X' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('*400X*'))
-        elif 'rect' in args.dataset:
-            all_config_files = list(Path('./networks/confs').glob('rect*'))
+        # args.dataset = 'breakhis8400X'
+        all_config_files = list(Path('./networks/confs').glob(f'{args.dataset}*'))
 
         all_config = []
         all_args = []
@@ -269,6 +256,6 @@ if __name__ == '__main__':
                 else:
                     train_val(0, 0, args, cfg, itrs, '../data','./params_save')
 
-                # break
+        break
 
 

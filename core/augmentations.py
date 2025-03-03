@@ -6,7 +6,7 @@ import torch
 from torch import Tensor
 from torchvision.transforms.autoaugment import RandAugment, TrivialAugmentWide, AugMix
 from torchvision.transforms import functional as F, InterpolationMode
-
+from PIL import Image
 
 def _apply_op(
     img: Tensor, op_name: str, magnitude: float, interpolation: InterpolationMode, fill: Optional[List[float]]
@@ -116,6 +116,8 @@ class MyAugment(torch.nn.Module):
         prob_bin: int = 10,
         interpolation: InterpolationMode = InterpolationMode.NEAREST,
         fill: Optional[List[float]] = None,
+        resize = False,
+        resize_size = None
     ) -> None:
         super().__init__()
         self.mag_bin = mag_bin
@@ -126,6 +128,8 @@ class MyAugment(torch.nn.Module):
         self.policy = torch.t(torch.tensor(policy).reshape(-1,num_ops))
         self.mag_neighbor_range = mag_neigbor_range
         self.magnitude = magnitude
+        self.resize = resize
+        self.resize_size = resize_size
 
     def get_policy(self, policy):
         self.policy = policy
@@ -178,77 +182,6 @@ class MyAugment(torch.nn.Module):
                 magnitude *= -1.0
             if torch.randn(1) < prob:
                 img = _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
-        return img
-    
-class MyTrivialAugment(TrivialAugmentWide):
-    def __init__(
-        self,
-        policy,
-        mag_neigbor_range : int = 1,
-        num_magnitude_bins: int = 31,
-        interpolation: InterpolationMode = InterpolationMode.NEAREST,
-        fill: Optional[List[float]] = None,
-    ) -> None:
-        super().__init__()
-        self.num_magnitude_bins = num_magnitude_bins
-        self.interpolation = interpolation
-        self.fill = fill
-        self.policy = policy
-        self.mag_neighbor_range = mag_neigbor_range
-
-    def _augmentation_space(self, num_bins: int) -> Dict[str, Tuple[Tensor, bool]]:
-        old_space = TrivialAugmentWide._augmentation_space(num_bins)
-
-        new_policy = {}
-        for policy in self.policy:
-            op_index, magnitude = list(*policy)
-            old_magnitude = list(old_space.values())[op_index][0] 
-            key = list(old_space.keys())[op_index]
-            if old_magnitude.ndim == 0:
-                if key in new_policy.keys():
-                    continue
-                else:
-                    new_policy[key] = list(old_space.values())[op_index]
-            else:
-                new_magnitude = list(range(magnitude-self.mag_neighbor_range,magnitude+self.mag_neighbor_range+1))
-                new_magnitude = [m for m in new_magnitude if m >=0 and m<self.num_magnitude_bins] 
-                new_magnitude = torch.tensor([old_magnitude[m] for m in new_magnitude])
-            
-                if key in new_policy.keys():
-                    magnitude = new_policy[key][0]
-                    magnitude = torch.unique(torch.hstack((magnitude, new_magnitude)))
-                    new_policy[key] = (magnitude, new_policy[key][1])
-                else:                
-                    new_policy[key] = (new_magnitude, old_space[key][1])
-        return new_policy
-    
-    def forward(self, img: Tensor) -> Tensor:
-        """
-            img (PIL Image or Tensor): Image to be transformed.
-
-        Returns:
-            PIL Image or Tensor: Transformed image.
-        """
-        fill = self.fill
-        channels, height, width = F.get_dimensions(img)
-        if isinstance(img, Tensor):
-            if isinstance(fill, (int, float)):
-                fill = [float(fill)] * channels
-            elif fill is not None:
-                fill = [float(f) for f in fill]
-
-        op_meta = self._augmentation_space(self.num_magnitude_bins)
-        op_index = int(torch.randint(len(op_meta), (1,)).item())
-        op_name = list(op_meta.keys())[op_index]
-        magnitudes, signed = op_meta[op_name]
-        magnitude = (
-            float(magnitudes[torch.randint(len(magnitudes), (1,), dtype=torch.long)].item())
-            if magnitudes.ndim > 0
-            else 0.0
-        )
-        if signed and torch.randint(2, (1,)):
-            magnitude *= -1.0
-
-        img = _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
-
+        if self.resize:
+            img = F.resize(img, self.resize_size, interpolation=Image.BICUBIC)
         return img

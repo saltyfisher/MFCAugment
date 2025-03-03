@@ -41,16 +41,16 @@ def MFPSO(Tasks, options, params):
     TotalEvaluations = np.zeros((reps, gen))  # 到目前为止的任务评估总数
     bestobj = np.inf * np.ones(no_of_tasks) # 到目前为止找到的任务最优目标值
     bestPop = np.zeros((reps, pop), dtype=object)
-    for rep in tqdm(range(reps)):
+    for rep in range(reps):
         population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
         
-        results = joblib.Parallel(n_jobs=10, backend='loky')(
+        st = time.time()
+        results = joblib.Parallel(n_jobs=1, backend='loky')(
             joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
             for i in range(pop))
-        # st = time.time()
         # for i in range(pop):
         #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
-        # print(time.time()-st)
+        print(f'Initializing:{time.time()-st:.2f}')
         for r in results:
             fnceval_calls[rep] += r[1]
             population[r[2]] = r[0]
@@ -88,7 +88,7 @@ def MFPSO(Tasks, options, params):
         ite = 1
         noImpove = 0
         while ite <= gen:
-            print(f'Generation: {ite}\t Repeat: {rep}\t Best Fitness: {bestobj}')
+            st = time.time()
             w1 = wmax - (wmax - wmin) * ite / 1000
             
             if ite % 10 == 0 and noImpove >= 20:
@@ -134,6 +134,8 @@ def MFPSO(Tasks, options, params):
                 else:
                     noImpove += 1
                 EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
+            bestobj_str = [f'{o:.2f}' for o in bestobj]
+            print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
             ite += 1
         bestPop[rep, :] = population           
         
