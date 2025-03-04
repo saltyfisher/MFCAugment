@@ -77,7 +77,7 @@ def run_epoch(args, config, model, loader, loss_fn, optimizer, desc_default='', 
             scheduler.step(epoch - 1 + float(steps) / total_steps)
         metrics.add_dict({'loss': loss.item()})
         #before_load_time = time()
-        del preds, loss, data, label
+        # del preds, loss, data, label
         if optimizer:
             metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
     precision = precision_score(config, torch.stack(all_preds), torch.stack(all_labels))
@@ -144,10 +144,10 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     best_f1 = 0
 
     traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
-    transform = torchvision.transforms.Compose([transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
+    transform = torchvision.transforms.Compose([transforms.Resize(config['img_size']),
                                                     transforms.ToTensor()])
     traintest_dataset.update_transform(transform, False)
-    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     if 'breakhis' in config['dataset']:
         testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     else:
@@ -161,7 +161,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
 
         result = OrderedDict()
         
-        if only_eval or epoch % 20 == 0 or epoch == max_epoch:
+        if only_eval or (epoch+1) % 20 == 0 or epoch == max_epoch:
             with torch.no_grad():
                 rs['test'].append(run_epoch(args,config,model, testloader
                 , criterion, None, desc_default='*test', epoch=epoch, writer=writers[2], verbose=True))

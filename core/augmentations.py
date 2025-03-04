@@ -7,7 +7,6 @@ from torch import Tensor
 from torchvision.transforms.autoaugment import RandAugment, TrivialAugmentWide, AugMix
 from torchvision.transforms import functional as F, InterpolationMode
 from PIL import Image
-
 def _apply_op(
     img: Tensor, op_name: str, magnitude: float, interpolation: InterpolationMode, fill: Optional[List[float]]
 ):

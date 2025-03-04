@@ -45,16 +45,16 @@ def MFPSO(Tasks, options, params):
         population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
         
         st = time.time()
-        results = joblib.Parallel(n_jobs=1, backend='loky')(
+        results = joblib.Parallel(n_jobs=4, backend='loky')(
             joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
             for i in range(pop))
         # for i in range(pop):
         #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
-        print(f'Initializing:{time.time()-st:.2f}')
         for r in results:
             fnceval_calls[rep] += r[1]
             population[r[2]] = r[0]
         TotalEvaluations[rep, 0] = fnceval_calls[rep]
+        print(f'Initializing:{time.time()-st:.2f}')
         
         factorial_cost = np.zeros(pop)
         for i in range(no_of_tasks):      
@@ -104,7 +104,7 @@ def MFPSO(Tasks, options, params):
             for i in range(pop):
                 population[i].pbestUpdate()
             
-            results = joblib.Parallel(n_jobs=10, backend='loky')(
+            results = joblib.Parallel(n_jobs=1, backend='loky')(
             joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
             for i in range(pop))
             # st = time.time()
