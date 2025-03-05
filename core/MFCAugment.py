@@ -216,7 +216,7 @@ def MFCAugment(model, config, data_list, args, n_clusters=8, max_samples=100):
             batch_sizes = torch.tensor([i.shape[:2] for i in batch_imgs])
             batch_sizes, counts = torch.unique(batch_sizes, dim=0, return_counts=True)
             resize_size = batch_sizes[torch.argmax(counts)]
-            transformer = transforms.Resize(resize_size.tolist(), interpolation=Image.BICUBIC)
+            transformer = transforms.Resize(resize_size.tolist())
             batch_imgs = [transformer(d.permute(2,0,1)).unsqueeze(0) for d in batch_imgs]
             batch_imgs = torch.cat(batch_imgs, dim=0).to(torch.uint8)
             all_batch_imgs.append(batch_imgs)
@@ -237,8 +237,9 @@ def MFCAugment(model, config, data_list, args, n_clusters=8, max_samples=100):
     options = {'popsize':50,'maxgen':20,'rmp':0.3,'reps':2}
     bestPop = MFPSO(tasks, options, params)
     bestPolicy = [[np.floor(bestPop[i,j].pbest*(Ub-Lb)+Lb)] for i in range(options['reps']) for j in range(options['popsize'])]
+    skillFactor = [bestPop[i,j].skill_factor for i in range(options['reps']) for j in range(options['popsize'])]
 
-    return bestPolicy
+    return bestPolicy, skillFactor, groups
     
 
 

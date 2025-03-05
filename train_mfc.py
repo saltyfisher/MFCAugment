@@ -185,11 +185,14 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
                     cluster_num = 3
                 if 'breakhis8' in config['dataset']:
                     cluster_num = 8
-                policy_subset = MFCAugment(model, config, data_list, args, n_clusters=cluster_num)
+                policy_subset, skill_factor, groups = MFCAugment(model, config, data_list, args, n_clusters=cluster_num)
                 optimal_policy = []
-                for p in policy_subset:
+                for g in range(max(groups)+1):
+                    idx = np.argwhere(skill_factor==g).squeeze()
+                    policy = 
+                for p in zip(policy_subset, skill_factor):
                     policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
-                                                            transforms.Resize(config['img_size'], interpolation=Image.BICUBIC),
+                                                            transforms.Resize(config['img_size']),
                                                             transforms.ToTensor()])
                     if 'rect' in config['dataset']:
                         policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
@@ -252,9 +255,9 @@ if __name__ == '__main__':
                 #     continue
                 print(save_name)
                 if args.MFC:                    
-                    train_val(0, 0, args, cfg, itrs, '../data','./params_save/mfc')
+                    train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData','./params_save/mfc')
                 else:
-                    train_val(0, 0, args, cfg, itrs, '../data','./params_save')
+                    train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData','./params_save')
 
         break
 

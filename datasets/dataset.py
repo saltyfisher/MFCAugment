@@ -20,7 +20,8 @@ class Mydata(Dataset):
     def __getitem__(self, idx):
         image = Image.open(self.full_filenames[idx])
         if self.mfc:
-            transform = self.transform[random.randint(0, len(self.transform) - 1)]
+            all_transforms = self.transform[self.groups[idx]]
+            transform = all_transforms[random.randint(0, len(all_transforms))]
         else:
             transform = self.transform
         image = transform(image)
@@ -33,9 +34,10 @@ class Mydata(Dataset):
     def get_labels(self):
         return self.labels
     
-    def update_transform(self, transform, mfc):
+    def update_transform(self, transform, groups, mfc):
         self.transform = transform
         self.mfc = mfc
+        self.groups = groups
 
 class MyDataloader:
     def __init__(self,dataset,batch_size=1,shuffle=False,num_workers=1):

@@ -182,5 +182,5 @@ class MyAugment(torch.nn.Module):
             if torch.randn(1) < prob:
                 img = _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
         if self.resize:
-            img = F.resize(img, self.resize_size, interpolation=Image.BICUBIC)
+            img = F.resize(img, self.resize_size)
         return img
