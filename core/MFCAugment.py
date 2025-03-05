@@ -237,7 +237,7 @@ def MFCAugment(model, config, data_list, args, n_clusters=8, max_samples=100):
     options = {'popsize':50,'maxgen':20,'rmp':0.3,'reps':2}
     bestPop = MFPSO(tasks, options, params)
     bestPolicy = [[np.floor(bestPop[i,j].pbest*(Ub-Lb)+Lb)] for i in range(options['reps']) for j in range(options['popsize'])]
-    skillFactor = [bestPop[i,j].skill_factor for i in range(options['reps']) for j in range(options['popsize'])]
+    skillFactor = np.array([bestPop[i,j].skill_factor for i in range(options['reps']) for j in range(options['popsize'])])
 
     return bestPolicy, skillFactor, groups
     

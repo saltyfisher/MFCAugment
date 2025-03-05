@@ -21,7 +21,7 @@ class Mydata(Dataset):
         image = Image.open(self.full_filenames[idx])
         if self.mfc:
             all_transforms = self.transform[self.groups[idx]]
-            transform = all_transforms[random.randint(0, len(all_transforms))]
+            transform = all_transforms[random.randint(0, len(all_transforms)-1)]
         else:
             transform = self.transform
         image = transform(image)

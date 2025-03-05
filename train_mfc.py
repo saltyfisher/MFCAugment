@@ -137,7 +137,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
             after_scheduler=scheduler
         )
     max_epoch = config['epoch']
-    epoch_start = 0
+    epoch_start = 1
     rs = {'train':[],'test':[]}
     if only_eval:
         max_epoch = 0
@@ -146,14 +146,14 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
     transform = torchvision.transforms.Compose([transforms.Resize(config['img_size']),
                                                     transforms.ToTensor()])
-    traintest_dataset.update_transform(transform, False)
+    traintest_dataset.update_transform(transform, [], False)
     traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     if 'breakhis' in config['dataset']:
         testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     else:
         testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
     data_list = traintest_dataset.get_all_files()
-    for epoch in tqdm(range(epoch_start, max_epoch),desc=f"Task{task_id} Iter{itrs}"):
+    for epoch in tqdm(range(epoch_start, max_epoch+1),desc=f"Task{task_id} Iter{itrs}"):
         model.train()     
 
         rs['train'].append(run_epoch(args,config,model, traintestloader, criterion, optimizer, desc_default='', epoch=epoch, writer=writers[0], verbose=0, scheduler=None,sample_pairing_loader=None))
@@ -161,7 +161,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
 
         result = OrderedDict()
         
-        if only_eval or (epoch+1) % 20 == 0 or epoch == max_epoch:
+        if only_eval or epoch % 20 == 0 or epoch == max_epoch:
             with torch.no_grad():
                 rs['test'].append(run_epoch(args,config,model, testloader
                 , criterion, None, desc_default='*test', epoch=epoch, writer=writers[2], verbose=True))
@@ -189,20 +189,18 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
                 optimal_policy = []
                 for g in range(max(groups)+1):
                     idx = np.argwhere(skill_factor==g).squeeze()
-                    policy = 
-                for p in zip(policy_subset, skill_factor):
-                    policy = torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
+                    policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
                                                             transforms.Resize(config['img_size']),
-                                                            transforms.ToTensor()])
+                                                            transforms.ToTensor()]) for i in idx]
                     if 'rect' in config['dataset']:
-                        policy.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512)))
+                        policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
                     optimal_policy.append(policy)
-            traintest_dataset.update_transform(optimal_policy, True)
-            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
-            if 'breakhis' in config['dataset']:
-                testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-            else:
-                testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+                traintest_dataset.update_transform(optimal_policy, groups, True)
+                traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+                if 'breakhis' in config['dataset']:
+                    testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+                else:
+                    testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
     del model    
     del rs
