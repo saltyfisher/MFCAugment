@@ -97,6 +97,10 @@ def KL_loss(p, q):
     loss = kl_divergence_multivariate(p, q)
     return loss
 
-def KL_loss_all(p, q, idx, w):
+def KL_loss_intergroup(p, q, idx, w):
     loss = [w[idx][j]*KL_loss(p,q) for j in range(w.shape[0])]
+    return loss
+
+def KL_loss_all(p, q):
+    loss = KL_loss(p,q)
     return loss

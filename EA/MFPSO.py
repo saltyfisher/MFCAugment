@@ -41,104 +41,103 @@ def MFPSO(Tasks, options, params):
     TotalEvaluations = np.zeros((reps, gen))  # 到目前为止的任务评估总数
     bestobj = np.inf * np.ones(no_of_tasks) # 到目前为止找到的任务最优目标值
     bestPop = np.zeros((reps, pop), dtype=object)
-    for rep in range(reps):
-        population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
-        
-        st = time.time()
-        results = joblib.Parallel(n_jobs=4, backend='loky')(
-            joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
-            for i in range(pop))
-        # for i in range(pop):
-        #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
-        for r in results:
-            fnceval_calls[rep] += r[1]
-            population[r[2]] = r[0]
-        TotalEvaluations[rep, 0] = fnceval_calls[rep]
-        print(f'Initializing:{time.time()-st:.2f}')
-        
-        factorial_cost = np.zeros(pop)
-        for i in range(no_of_tasks):      
-            for j in range(pop):
-                factorial_cost[j] = population[j].factorial_costs[i]
-            sorted_indices = np.argsort(factorial_cost)
-            population = [population[i] for i in sorted_indices]  # 根据当前任务的factorial_cost重新排序种群
-            for j in range(pop):
-                population[j].factorial_ranks[i] = j
-            bestobj[i] = population[0].factorial_costs[i]
-            gbest = np.array([population[0].rnvec for _ in range(no_of_tasks)])
-            EvBestFitness[i + 2 * (rep - 1), 0] = bestobj[i]
-            bestInd_data = np.array([population[0] for _ in range(no_of_tasks)])
-        
-        for i in range(pop):
-            min_rank = np.min(population[i].factorial_ranks)
-            equivalent_skills = np.where(population[i].factorial_ranks == min_rank)[0]
-            if len(equivalent_skills) > 1:  # 如果在多个任务上有最佳适应度，随机选择一个并将其factorial_costs设置为inf
-                population[i].skill_factor = equivalent_skills[np.random.randint(len(equivalent_skills))]
-                tmp = population[i].factorial_costs[population[i].skill_factor]
-                population[i].factorial_costs = np.inf * np.ones(no_of_tasks)
-                population[i].factorial_costs[population[i].skill_factor] = tmp
-                population[i].pbestFitness = tmp
-            else:  # 否则，只需设置skill_factor并将其factorial_costs设置为inf
-                population[i].skill_factor = np.argmin(population[i].factorial_ranks)
-                tmp = population[i].factorial_costs[population[i].skill_factor]
-                population[i].factorial_costs = np.inf * np.ones(no_of_tasks)
-                population[i].factorial_costs[population[i].skill_factor] = tmp
-                population[i].pbestFitness = tmp
-        
-        ite = 1
-        noImpove = 0
-        while ite <= gen:
+    with joblib.Parallel(n_jobs=6, backend='threading') as parallel:
+        for rep in range(reps):
+            population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
+            
             st = time.time()
-            w1 = wmax - (wmax - wmin) * ite / 1000
-            
-            if ite % 10 == 0 and noImpove >= 20:
-                # 重启
-                for i in range(pop):
-                    population[i].velocityUpdate(gbest, rmp, w11, c11, c22, c33)
-            else:            
-                for i in range(pop):
-                    population[i].velocityUpdate(gbest, rmp, w1, c1, c2, c3)
-            
-            for i in range(pop):
-                population[i].positionUpdate()
-            for i in range(pop):
-                population[i].pbestUpdate()
-            
-            results = joblib.Parallel(n_jobs=1, backend='loky')(
-            joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
-            for i in range(pop))
-            # st = time.time()
+            results = parallel(joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
+                for i in range(pop))
             # for i in range(pop):
             #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
-            # print(time.time()-st)
             for r in results:
                 fnceval_calls[rep] += r[1]
                 population[r[2]] = r[0]
-            # for i in range(pop):            
-            #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)           
-            # fnceval_calls[rep] += np.sum(calls_per_individual)                   
+            TotalEvaluations[rep, 0] = fnceval_calls[rep]
+            print(f'Initializing:{time.time()-st:.2f}')
             
             factorial_cost = np.zeros(pop)
-            for i in range(no_of_tasks):
+            for i in range(no_of_tasks):      
                 for j in range(pop):
                     factorial_cost[j] = population[j].factorial_costs[i]
                 sorted_indices = np.argsort(factorial_cost)
-                population = [population[i] for i in sorted_indices]
+                population = [population[i] for i in sorted_indices]  # 根据当前任务的factorial_cost重新排序种群
                 for j in range(pop):
-                    population[j].factorial_ranks[i] = j + 1
-                if population[0].factorial_costs[i] <= bestobj[i]:
-                    bestobj[i] = population[0].factorial_costs[i]                   
-                    gbest[i, :] = population[0].rnvec
-                    bestInd_data[i, ] = population[0]
-                    noImpove = 0
-                else:
-                    noImpove += 1
-                EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
-            bestobj_str = [f'{o:.2f}' for o in bestobj]
-            print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
-            ite += 1
-        bestPop[rep, :] = population           
-        
+                    population[j].factorial_ranks[i] = j
+                bestobj[i] = population[0].factorial_costs[i]
+                gbest = np.array([population[0].rnvec for _ in range(no_of_tasks)])
+                EvBestFitness[i + 2 * (rep - 1), 0] = bestobj[i]
+                bestInd_data = np.array([population[0] for _ in range(no_of_tasks)])
+            
+            for i in range(pop):
+                min_rank = np.min(population[i].factorial_ranks)
+                equivalent_skills = np.where(population[i].factorial_ranks == min_rank)[0]
+                if len(equivalent_skills) > 1:  # 如果在多个任务上有最佳适应度，随机选择一个并将其factorial_costs设置为inf
+                    population[i].skill_factor = equivalent_skills[np.random.randint(len(equivalent_skills))]
+                    tmp = population[i].factorial_costs[population[i].skill_factor]
+                    population[i].factorial_costs = np.inf * np.ones(no_of_tasks)
+                    population[i].factorial_costs[population[i].skill_factor] = tmp
+                    population[i].pbestFitness = tmp
+                else:  # 否则，只需设置skill_factor并将其factorial_costs设置为inf
+                    population[i].skill_factor = np.argmin(population[i].factorial_ranks)
+                    tmp = population[i].factorial_costs[population[i].skill_factor]
+                    population[i].factorial_costs = np.inf * np.ones(no_of_tasks)
+                    population[i].factorial_costs[population[i].skill_factor] = tmp
+                    population[i].pbestFitness = tmp
+            
+            ite = 1
+            noImpove = 0
+            while ite <= gen:
+                st = time.time()
+                w1 = wmax - (wmax - wmin) * ite / 1000
+                
+                if ite % 10 == 0 and noImpove >= 20:
+                    # 重启
+                    for i in range(pop):
+                        population[i].velocityUpdate(gbest, rmp, w11, c11, c22, c33)
+                else:            
+                    for i in range(pop):
+                        population[i].velocityUpdate(gbest, rmp, w1, c1, c2, c3)
+                
+                for i in range(pop):
+                    population[i].positionUpdate()
+                for i in range(pop):
+                    population[i].pbestUpdate()
+                
+                results = parallel(joblib.delayed(population[i].evaluate)(Tasks, no_of_tasks, params)
+                for i in range(pop))
+                # st = time.time()
+                # for i in range(pop):
+                #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)
+                # print(time.time()-st)
+                for r in results:
+                    fnceval_calls[rep] += r[1]
+                    population[r[2]] = r[0]
+                # for i in range(pop):            
+                #     calls_per_individual[i] = population[i].evaluate(Tasks, no_of_tasks, params)           
+                # fnceval_calls[rep] += np.sum(calls_per_individual)                   
+                
+                factorial_cost = np.zeros(pop)
+                for i in range(no_of_tasks):
+                    for j in range(pop):
+                        factorial_cost[j] = population[j].factorial_costs[i]
+                    sorted_indices = np.argsort(factorial_cost)
+                    population = [population[i] for i in sorted_indices]
+                    for j in range(pop):
+                        population[j].factorial_ranks[i] = j + 1
+                    if population[0].factorial_costs[i] <= bestobj[i]:
+                        bestobj[i] = population[0].factorial_costs[i]                   
+                        gbest[i, :] = population[0].rnvec
+                        bestInd_data[i, ] = population[0]
+                        noImpove = 0
+                    else:
+                        noImpove += 1
+                    EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
+                bestobj_str = [f'{o:.2f}' for o in bestobj]
+                print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
+                ite += 1
+            bestPop[rep, :] = population           
+            
     data_MFPSO = {
         'EvBestFitness': EvBestFitness,
         'bestInd_data': bestInd_data,

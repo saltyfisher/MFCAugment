@@ -89,22 +89,19 @@ def run_epoch(args, config, model, loader, loss_fn, optimizer, desc_default='', 
         'f1':f1[0].item()
     })
     metrics.metrics['loss'] = metrics.metrics['loss']/cnt
-    for key, value in metrics.items():
-        writer.add_scalar(key, value, epoch)
+    if writer is not None:
+        for key, value in metrics.items():
+            writer.add_scalar(key, value, epoch)
     return metrics
 
-def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, only_eval=False, only_train=False):
-    os.makedirs('./logs/mfc', exist_ok=True)
-    os.makedirs(save_path, exist_ok=True)
-    save_name = Path(args.config).stem
-    save_path = str(Path(save_path).joinpath(save_name+f'_itrs{itrs+1}'))
-    writers = [SummaryWriter(log_dir=f'./logs/mfc/{save_path}/{x}/') for x in ['train', 'valid', 'test']]
-    model = get_model(config['model'], args.batch_size, num_class(config['dataset']), writer=writers[0])
-    if args.use_parallel:
-        model = model.to(f'cuda:{gpu_id}')
+def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None):
+    if save_path is not None:
+        save_path = str(Path(save_path).joinpath(save_name))
+        writers = [SummaryWriter(log_dir=f'{log_path}/{save_name}/{x}/') for x in ['train', 'valid', 'test']]
     else:
-        model = model.to(f'cuda:{args.device}')
-
+        writers = [None for x in ['train', 'valid', 'test']]
+    model = get_model(config['model'], args.batch_size, num_class(config['dataset']), writer=writers[0])
+    model = model.to(f'cuda:{args.device}')
     criterion = nn.CrossEntropyLoss()
     if config['optimizer']['type'] == 'sgd':
         optimizer = optim.SGD(
@@ -139,8 +136,6 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     max_epoch = config['epoch']
     epoch_start = 1
     rs = {'train':[],'test':[]}
-    if only_eval:
-        max_epoch = 0
     best_f1 = 0
 
     traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
@@ -155,13 +150,12 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
     data_list = traintest_dataset.get_all_files()
     for epoch in tqdm(range(epoch_start, max_epoch+1),desc=f"Task{task_id} Iter{itrs}"):
         model.train()     
-
         rs['train'].append(run_epoch(args,config,model, traintestloader, criterion, optimizer, desc_default='', epoch=epoch, writer=writers[0], verbose=0, scheduler=None,sample_pairing_loader=None))
         model.eval()
 
         result = OrderedDict()
         
-        if only_eval or epoch % 20 == 0 or epoch == max_epoch:
+        if (save_path is not None) and (epoch % 20 == 0 or epoch == max_epoch):
             with torch.no_grad():
                 rs['test'].append(run_epoch(args,config,model, testloader
                 , criterion, None, desc_default='*test', epoch=epoch, writer=writers[2], verbose=True))
@@ -180,31 +174,33 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, onl
                         'model': model.state_dict(),
                     }, save_path+'.pth')   
 
-            if args.MFC:
-                if 'lym' in config['dataset']:
-                    cluster_num = 3
-                if 'breakhis8' in config['dataset']:
-                    cluster_num = 8
+        if args.MFC and epoch == epoch_start:
+            if 'lym' in config['dataset']:
+                cluster_num = 3
+            if 'breakhis8' in config['dataset']:
+                cluster_num = 8
+            if pretrain_model is None:
                 policy_subset, skill_factor, groups = MFCAugment(model, config, data_list, args, n_clusters=cluster_num)
-                optimal_policy = []
-                for g in range(max(groups)+1):
-                    idx = np.argwhere(skill_factor==g).squeeze()
-                    policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
-                                                            transforms.Resize(config['img_size']),
-                                                            transforms.ToTensor()]) for i in idx]
-                    if 'rect' in config['dataset']:
-                        policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
-                    optimal_policy.append(policy)
-                traintest_dataset.update_transform(optimal_policy, groups, True)
-                traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
-                if 'breakhis' in config['dataset']:
-                    testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-                else:
-                    testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+            else:
+                policy_subset, skill_factor, groups = MFCAugment(pretrain_model, config, data_list, args, n_clusters=cluster_num)
+            optimal_policy = []
+            for g in range(max(groups)+1):
+                idx = np.argwhere(skill_factor==g).squeeze()
+                policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
+                                                        transforms.Resize(config['img_size']),
+                                                        transforms.ToTensor()]) for i in idx]
+                if 'rect' in config['dataset']:
+                    policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
+                optimal_policy.append(policy)
+            traintest_dataset.update_transform(optimal_policy, groups, True)
+            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+            if 'breakhis' in config['dataset']:
+                testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+            else:
+                testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
-    del model    
-    del rs
-
+    return model
+    
 def run_python_file(args):
     # command = [python_executable, file_name] + list(args)
     # result = subprocess.run(args, capture_output=True, text=True)
@@ -244,18 +240,26 @@ if __name__ == '__main__':
         
         for itrs in range(1):        
             for args, cfg in zip(all_args, all_config):
-                save_path = './params_save'
-                save_name = args.config.split(".yaml")[0].split("/")[-1]
+                save_path = './params_save/'
+                log_path = './logs/'
+                save_name = Path(args.config).stem
                 # if 'lym' in save_name and 'rand' in save_name:
                 # if 'rand' in save_name or 'trivial' in save_name:
-                save_path = f'{save_path}/{save_name}_itrs{itrs+1}' 
                 # if os.path.exists(save_path+'.pth'):
                 #     continue
                 print(save_name)
-                if args.MFC:                    
-                    train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData','./params_save/mfc')
-                else:
-                    train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData','./params_save')
+                if args.MFC:
+                    save_path += 'mfc'
+                    log_path += 'mfc'
+                if args.resize:
+                    save_name += '_resize'
+                save_name += f'_itrs{itrs+1}'
+                print('Pretrain start')
+                pretrain_args = deepcopy(args)
+                pretrain_args.MFC = False
+                model = train_val(0, 0, pretrain_args, cfg, itrs, '../MedicalImageClassficationData')
+                print('Pretrain end')
+                train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name,model)
 
         break
 

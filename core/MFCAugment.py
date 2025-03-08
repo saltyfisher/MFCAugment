@@ -18,7 +18,7 @@ from itertools import chain
 from PIL import Image
 from core.FeatureExtractor import FeatureExtractor
 from core.augmentations import MyAugment, augmentation_space
-from core.utils import KL_loss_all
+from core.utils import KL_loss_all, KL_loss_intergroup
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
@@ -41,71 +41,45 @@ def constrained_kmeans_ilp(X, k, max_iters=100):
     
     kmeans = KMeans(n_clusters=k)
     groups = kmeans.fit_predict(X)
-    centers = kmeans.cluster_centers_
+    # centers = kmeans.cluster_centers_
     # 初始化簇中心（例如通过 K-means++）
-    # centers = X[np.random.choice(n_samples, k, replace=False)]
-    distances = np.linalg.norm(X[:, np.newaxis] - centers, axis=2).astype(np.double)
-    
-    # 定义变量
-    x = {}
-    for i in range(n_samples):
-        for j in range(k):
-            x[i, j] = solver.IntVar(0, 1, f'x_{i}_{j}')
-    
-    # 约束1：每个样本必须分配到一个簇
-    for i in range(n_samples):
-        solver.Add(sum(x[i, j] for j in range(k)) == 1)
-    
-    # 约束2：每个簇的样本数在 [L, U] 范围内
-    for j in range(k):
-        solver.Add(sum(x[i, j] for i in range(n_samples)) >= L)
-        solver.Add(sum(x[i, j] for i in range(n_samples)) <= U)
-    
-    # 目标函数：最小化总距离
-    objective = solver.Objective()
-    for i in range(n_samples):
-        for j in range(k):
-            objective.SetCoefficient(x[i, j], distances[i, j])
-    objective.SetMinimization()
-    
-    # 求解
-    status = solver.Solve()
-    if status == pywraplp.Solver.OPTIMAL:
-        labels = np.array([np.argmax([x[i, j].solution_value() for j in range(k)]) for i in range(n_samples)])
-        centers = np.array([X[labels == i].mean(axis=0) for i in range(k)])
-        return labels, centers
-    else:
-        raise ValueError("No optimal solution found.")
-    
-def balanced_kmeans(X, k, max_iters=100):
-    n_samples, n_features = X.shape
-    cluster_size = n_samples // k  # 每个簇的理论样本数
-    r = n_samples % k
-    # 初始化中心点（如K-means++）
-    indices = np.random.choice(n_samples, k, replace=False)
-    centers = X[indices]
-    
+    centers = X[np.random.choice(n_samples, k, replace=False)]
+
     for _ in range(max_iters):
-        # 1. 计算样本到簇中心的距离矩阵（shape: n_samples x k）
-        distances = np.linalg.norm(X[:, np.newaxis] - centers, axis=2)
-        repeats = [cluster_size + 1] * r + [cluster_size] * (k - r)
-        # 2. 构建匈牙利算法输入矩阵（垂直复制 cluster_size 次）
-        expanded_distances = np.repeat(distances, repeats, axis=1)  # shape: n_samples x (k*cluster_size)
+        distances = np.linalg.norm(X[:, np.newaxis] - centers, axis=2).astype(np.double)
         
-        # 3. 调用匈牙利算法（行：样本，列：每个簇的虚拟槽位）
-        row_ind, col_ind = linear_sum_assignment(expanded_distances.T)  # 转置为 (k*cluster_size) x n_samples
+        # 定义变量
+        x = {}
+        for i in range(n_samples):
+            for j in range(k):
+                x[i, j] = solver.IntVar(0, 1, f'x_{i}_{j}')
         
-        # 4. 根据分配结果生成标签（每个样本被分配到哪个簇的槽位）
-        labels = np.zeros(n_samples, dtype=int)
-        virtual_slot_to_cluster = np.repeat(np.arange(k), repeats)  # 槽位对应的真实簇编号
-        for sample_idx, slot_idx in zip(row_ind, col_ind):
-            labels[sample_idx] = virtual_slot_to_cluster[slot_idx]
+        # 约束1：每个样本必须分配到一个簇
+        for i in range(n_samples):
+            solver.Add(sum(x[i, j] for j in range(k)) == 1)
         
-        # 5. 更新中心点
-        new_centers = np.array([X[labels == i].mean(axis=0) for i in range(k)])
-        if np.allclose(centers, new_centers):
-            break
-        centers = new_centers
+        # 约束2：每个簇的样本数在 [L, U] 范围内
+        for j in range(k):
+            solver.Add(sum(x[i, j] for i in range(n_samples)) >= L)
+            solver.Add(sum(x[i, j] for i in range(n_samples)) <= U)
+        
+        # 目标函数：最小化总距离
+        objective = solver.Objective()
+        for i in range(n_samples):
+            for j in range(k):
+                objective.SetCoefficient(x[i, j], distances[i, j])
+        objective.SetMinimization()
+        
+        # 求解
+        status = solver.Solve()
+        if status == pywraplp.Solver.OPTIMAL:
+            labels = np.array([np.argmax([x[i, j].solution_value() for j in range(k)]) for i in range(n_samples)])
+            new_centers = np.array([X[labels == i].mean(axis=0) for i in range(k)])
+            if np.allclose(centers, new_centers):
+                break
+            centers = new_centers
+        else:
+            raise ValueError("No optimal solution found.")
     
     return labels, centers
 
@@ -120,7 +94,6 @@ class SingleTask(object):
     def evaluate(self, x, params):
         params.update({'Lb':self.Lb,'Ub':self.Ub})
         return self.evalfnc(x, params)
-
 def evalFunc(policy, params):
     feat_extractor = params['feat_extractor']
     data_list = params['data_list']
@@ -136,7 +109,7 @@ def evalFunc(policy, params):
     args = params['args']
     config = params['config']
     policy = np.floor(policy*(Ub-Lb)+Lb)
-    aug = MyAugment(policy,num_ops=params['n_op'],resize=False,resize_size=config['img_size'])
+    aug = MyAugment(policy,num_ops=params['n_op'],resize=args.resize,resize_size=config['img_size'])
     # indices = sampled_groups[group_id].tolist()
     # aug_imgs = [ToTensor()(aug((data_list[i]))).unsqueeze(0) for i in indices]
     aug_feat = []
@@ -149,9 +122,10 @@ def evalFunc(policy, params):
         aug_feat.append(feat)
     aug_feat = torch.cat(aug_feat, dim=0).cpu().numpy()
     aug_feat = pca.transform(aug_feat)
-    target_imgs = feat_list[groups!=group_id]
-    loss = KL_loss_all(target_imgs, aug_feat, group_id, w)
-    loss = np.sum(np.hstack(loss))
+    # target_imgs = feat_list[groups!=group_id]
+    # loss = KL_loss_intergroup(target_imgs, aug_feat, group_id, w)
+    # loss = np.sum(np.hstack(loss))
+    loss = KL_loss_all(feat_list, aug_feat)
     return loss
     
 def MFCAugment(model, config, data_list, args, n_clusters=8, max_samples=100):
@@ -165,8 +139,10 @@ def MFCAugment(model, config, data_list, args, n_clusters=8, max_samples=100):
     # feat_list = torch.cat(feat_list, dim=0).numpy()
     # pca = PCA(n_components=int(0.05*feat_list[0].shape[0]))
     # feat_list = pca.fit_transform(feat_list) 
-    # transformer = transforms.Compose([transforms.Resize(config['img_size'], interpolation=Image.BICUBIC), ToTensor()])
-    transformer = ToTensor()
+    if args.resize:
+        transformer = transforms.Compose([transforms.Resize(config['img_size']), ToTensor()])
+    else:
+        transformer = ToTensor()
     input_list = [(transformer(d)).unsqueeze(0) for d in data_list]
     feat_list = [get_deepfeat(config['model'],model,d.to(args.device)) for d in input_list]
     feat_list = torch.cat(feat_list, dim=0).cpu().numpy()
@@ -234,7 +210,7 @@ def MFCAugment(model, config, data_list, args, n_clusters=8, max_samples=100):
               'pca':pca, 
               'w':w,'n_op':n_op,'mag_bin':mag_bin,'prob_bin':prob_bin,
               'args':args,'config':config}
-    options = {'popsize':50,'maxgen':20,'rmp':0.3,'reps':2}
+    options = {'popsize':100,'maxgen':100,'rmp':0.3,'reps':2}
     bestPop = MFPSO(tasks, options, params)
     bestPolicy = [[np.floor(bestPop[i,j].pbest*(Ub-Lb)+Lb)] for i in range(options['reps']) for j in range(options['popsize'])]
     skillFactor = np.array([bestPop[i,j].skill_factor for i in range(options['reps']) for j in range(options['popsize'])])
