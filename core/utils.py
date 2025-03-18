@@ -1,12 +1,13 @@
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F   
+import torch.distributions as distributions 
+import numpy as np
 
 from scipy.spatial.distance import cosine
 from scipy.stats import gaussian_kde
 from scipy.integrate import quad
-from scipy import linalg
-import numpy as np
-from scipy import linalg
 
 def get_deepfeat(model_name, model, img):
     extracted_feat = []
@@ -26,19 +27,6 @@ def get_deepfeat(model_name, model, img):
     return feat
 
 def kde_kl_divergence(x, y, xbins=1000, epsilon=1e-10):
-    """
-    计算两个样本之间的 KL 散度，使用 KDE 方法。
-    
-    参数:
-    x (np.ndarray): 第一个样本数据
-    y (np.ndarray): 第二个样本数据
-    bandwidth (float): KDE 的带宽参数
-    xbins (int): 用于积分的区间数量
-    
-    返回:
-    float: KL 散度值
-    """
-    # 确保输入是 numpy 数组
     x = np.atleast_1d(x)
     y = np.atleast_1d(y)
     
@@ -59,24 +47,12 @@ def kde_kl_divergence(x, y, xbins=1000, epsilon=1e-10):
     dens_x = np.maximum(dens_x, epsilon)
     dens_y = np.maximum(dens_y, epsilon)
     # 计算 KL 散度
-    delta_x = x_range[1] - x_range[0]
+    delta_x = np.abs(x_range[1] - x_range[0])
     kl_div = np.sum(dens_x * np.log(dens_x / dens_y)) * delta_x
     
     return kl_div
 
 def kl_divergence_multivariate(x, y, xbins=1000, noise_level=1e-6):
-    """
-    计算两组多维样本之间的 KL 散度，使用 KDE 方法。
-    
-    参数:
-    x (np.ndarray): 第一组样本数据，形状为 (n_samples, n_features)
-    y (np.ndarray): 第二组样本数据，形状为 (n_samples, n_features)
-    xbins (int): 用于积分的区间数量
-    
-    返回:
-    float: KL 散度值
-    """
-    # 确保输入是 numpy 数组
     x = np.atleast_2d(x)
     y = np.atleast_2d(y)
     x = x+np.random.normal(0, noise_level, x.shape)
@@ -104,3 +80,50 @@ def KL_loss_intergroup(p, q, idx, w):
 def KL_loss_all(p, q):
     loss = KL_loss(p,q)
     return loss
+
+def loss_hinge_dis(dis_fake, dis_real):
+    loss_dist = torch.mean(F.relu(1. - dis_real))
+    loss_dist += torch.mean(F.relu(1. + dis_fake))
+    return loss_dist
+
+def loss_domain(pred_real, y_real):
+    return F.cross_entropy(pred_real, y_real)
+def loss_hinge_gen(dis_fake):
+  loss = -torch.mean(dis_fake)
+  return loss
+
+class AddNoise:
+    def __init__(self, min=0.0, max=0.1):
+        self.min = min
+        self.max = max
+        
+    def __call__(self, tensor):
+        noise = (torch.rand(tensor.shape)*(self.max-self.min)).to(tensor.device)
+        return torch.clamp(tensor + noise, 0., 1.)
+
+import torch
+
+class PearsonCorrelationLoss(nn.Module):
+    def __init__(self, eps=1e-8):
+        super().__init__()
+        self.eps = eps  # 防止除以零的小常数
+
+    def forward(self, pred, target):
+        # 确保输入维度一致
+        assert pred.shape == target.shape, "预测值和目标值形状需一致"
+
+        # 中心化数据（减去均值）
+        pred_centered = pred - torch.mean(pred)
+        target_centered = target - torch.mean(target)
+
+        # 计算协方差和标准差
+        covariance = torch.sum(pred_centered * target_centered, dim=1)
+        pred_std = torch.sqrt(torch.sum(pred_centered ** 2, dim=1) + self.eps)
+        target_std = torch.sqrt(torch.sum(target_centered ** 2, dim=1) + self.eps)
+
+        # 计算皮尔逊相关系数
+        pearson_corr = covariance / (pred_std * target_std)
+
+        # 损失 = 1 - 相关系数（最小化损失等价于最大化相关性）
+        loss = 1 - pearson_corr.mean()
+        return loss

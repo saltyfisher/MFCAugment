@@ -88,12 +88,14 @@ def _apply_op(
 
 def augmentation_space(mag_bins: int=31, prob_bins: int=10, image_size: Tuple[int, int]=[320,320]) -> Dict[str, Tuple[Tensor, Tensor, bool]]:
     return {
+        # 坐标空间操作
         "Identity": (torch.tensor(0.0), torch.linspace(0.0, 1, prob_bins), False),
         "ShearX": (torch.linspace(0.0, 1, mag_bins), torch.linspace(0.0, 1, prob_bins), True),
         "ShearY": (torch.linspace(0.0, 1, mag_bins), torch.linspace(0.0, 1, prob_bins), True),
         "TranslateX": (torch.linspace(0.0, image_size[1], mag_bins), torch.linspace(0.0, 1, prob_bins), True),
         "TranslateY": (torch.linspace(0.0, image_size[0], mag_bins), torch.linspace(0.0, 1, prob_bins), True),
         "Rotate": (torch.linspace(0.0, 180.0, mag_bins), torch.linspace(0.0, 1, prob_bins), True),
+        # 颜色空间操作
         "Brightness": (torch.linspace(0.0, 0.9, mag_bins), torch.linspace(0.0, 1, prob_bins), True),
         "Color": (torch.linspace(0.0, 0.9, mag_bins), torch.linspace(0.0, 1, prob_bins), True),
         "Contrast": (torch.linspace(0.0, 0.9, mag_bins), torch.linspace(0.0, 1, prob_bins), True),

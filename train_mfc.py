@@ -96,8 +96,7 @@ def run_epoch(args, config, model, loader, loss_fn, optimizer, desc_default='', 
 
 def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None):
     if save_path is not None:
-        save_path = str(Path(save_path).joinpath(save_name))
-        writers = [SummaryWriter(log_dir=f'{log_path}/{save_name}/{x}/') for x in ['train', 'valid', 'test']]
+        writers = [SummaryWriter(log_dir=str(log_path.joinpath(save_name,x))) for x in ['train', 'valid', 'test']]
     else:
         writers = [None for x in ['train', 'valid', 'test']]
     model = get_model(config['model'], args.batch_size, num_class(config['dataset']), writer=writers[0])
@@ -147,7 +146,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
         testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     else:
         testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
-    data_list = traintest_dataset.get_all_files()
+    data_list, label_list = traintest_dataset.get_all_files()
     for epoch in tqdm(range(epoch_start, max_epoch+1),desc=f"Task{task_id} Iter{itrs}"):
         model.train()     
         rs['train'].append(run_epoch(args,config,model, traintestloader, criterion, optimizer, desc_default='', epoch=epoch, writer=writers[0], verbose=0, scheduler=None,sample_pairing_loader=None))
@@ -172,7 +171,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
                         },
                         'optimizer': optimizer.state_dict(),
                         'model': model.state_dict(),
-                    }, save_path+'.pth')   
+                    }, str(save_path.joinpath(save_name+'.pth')))   
 
         if args.MFC and epoch == epoch_start:
             if 'lym' in config['dataset']:
@@ -180,15 +179,19 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
             if 'breakhis8' in config['dataset']:
                 cluster_num = 8
             if pretrain_model is None:
-                policy_subset, skill_factor, groups = MFCAugment(model, config, data_list, args, n_clusters=cluster_num)
+                policy_subset, skill_factor, groups = MFCAugment(model, config, data_list, label_list, args, n_clusters=cluster_num)
             else:
-                policy_subset, skill_factor, groups = MFCAugment(pretrain_model, config, data_list, args, n_clusters=cluster_num)
+                policy_subset, skill_factor, groups = MFCAugment(pretrain_model, config, data_list, label_list, args, n_clusters=cluster_num)
             optimal_policy = []
-            for g in range(max(groups)+1):
-                idx = np.argwhere(skill_factor==g).squeeze()
+            # groups = [0]*len(data_list)
+            # policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
+            #                                             transforms.Resize(config['img_size']),
+            #                                             transforms.ToTensor()]) for i in range(len(policy_subset))]
+            # optimal_policy.append(policy)
+            for idx in range(len(groups)):
                 policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
                                                         transforms.Resize(config['img_size']),
-                                                        transforms.ToTensor()]) for i in idx]
+                                                        transforms.ToTensor()]) for i in np.where(skill_factor==idx)[0]]
                 if 'rect' in config['dataset']:
                     policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
                 optimal_policy.append(policy)
@@ -238,29 +241,43 @@ if __name__ == '__main__':
             all_config.append(cfg)
             # train_val(0%num_gpus,0,args, all_config[0],1,'../data','./params_save')
         
-        for itrs in range(1):        
+        for itrs in range(10):        
             for args, cfg in zip(all_args, all_config):
-                save_path = './params_save/'
-                log_path = './logs/'
+                save_path = Path('./params_save')
+                log_path = Path('./logs')
                 save_name = Path(args.config).stem
                 # if 'lym' in save_name and 'rand' in save_name:
                 # if 'rand' in save_name or 'trivial' in save_name:
                 # if os.path.exists(save_path+'.pth'):
                 #     continue
-                print(save_name)
+                print(save_name+f'_itrs{itrs+1}')
                 if args.MFC:
-                    save_path += 'mfc'
-                    log_path += 'mfc'
+                    save_path.joinpath('mfc')
+                    log_path.joinpath('mfc')
+                print('Pretrain start')
+                if os.path.exists(f'{save_name}_pretrained.pth'):
+                    model = torch.load(f'{save_name}_pretrained.pth')
+                else:
+                    pretrain_args = deepcopy(args)
+                    pretrain_args.MFC = False
+                    model = train_val(0, 0, pretrain_args, cfg, itrs, '../MedicalImageClassficationData')
+                    torch.save(model, f'{save_name}_pretrained.pth')
+                print('Pretrain end')
                 if args.resize:
                     save_name += '_resize'
+                if args.proxy:
+                    save_name += '_proxy'
+                    args.proxy_log_path = log_path.joinpath('proxy')
+                    args.proxy_save_path = save_path.joinpath('proxy')
+                    with open('./proxy_config.yaml') as f:
+                        proxy_cfg = yaml.load(f,Loader=yaml.FullLoader)
+                    args.proxy_config = proxy_cfg
                 save_name += f'_itrs{itrs+1}'
-                print('Pretrain start')
-                pretrain_args = deepcopy(args)
-                pretrain_args.MFC = False
-                model = train_val(0, 0, pretrain_args, cfg, itrs, '../MedicalImageClassficationData')
-                print('Pretrain end')
-                train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name,model)
+                args.save_name = save_name
+                # if os.path.exists(f'{save_path}/{save_name}.pth'):
+                #     continue
+                train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name)
+                break   
 
-        break
 
 

@@ -87,10 +87,13 @@ def MFPSO(Tasks, options, params):
             
             ite = 1
             noImpove = 0
+            converge = 0
             while ite <= gen:
                 st = time.time()
                 w1 = wmax - (wmax - wmin) * ite / 1000
                 
+                if converge >= 20:
+                    break
                 if ite % 10 == 0 and noImpove >= 20:
                     # 重启
                     for i in range(pop):
@@ -124,7 +127,7 @@ def MFPSO(Tasks, options, params):
                     sorted_indices = np.argsort(factorial_cost)
                     population = [population[i] for i in sorted_indices]
                     for j in range(pop):
-                        population[j].factorial_ranks[i] = j + 1
+                        population[j].factorial_ranks[i] = j
                     if population[0].factorial_costs[i] <= bestobj[i]:
                         bestobj[i] = population[0].factorial_costs[i]                   
                         gbest[i, :] = population[0].rnvec
@@ -135,6 +138,10 @@ def MFPSO(Tasks, options, params):
                     EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
                 bestobj_str = [f'{o:.2f}' for o in bestobj]
                 print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
+                if noImpove > 0:
+                    converge += 1
+                else:
+                    converge = 0
                 ite += 1
             bestPop[rep, :] = population           
             
