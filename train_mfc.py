@@ -119,7 +119,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
 
     lr_scheduler_type = config['lr_schedule'].get('type', 'cosine')
     if lr_scheduler_type == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config['epoch'], eta_min=0.)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0.)
     elif lr_scheduler_type == 'resnet':
         scheduler = adjust_learning_rate_resnet(config,optimizer)
     elif lr_scheduler_type == 'constant':
@@ -151,7 +151,7 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
         model.train()     
         rs['train'].append(run_epoch(args,config,model, traintestloader, criterion, optimizer, desc_default='', epoch=epoch, writer=writers[0], verbose=0, scheduler=None,sample_pairing_loader=None))
         model.eval()
-
+        scheduler.step()
         result = OrderedDict()
         
         if (save_path is not None) and (epoch % 20 == 0 or epoch == max_epoch):
@@ -183,18 +183,18 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
             else:
                 policy_subset, skill_factor, groups = MFCAugment(pretrain_model, config, data_list, label_list, args, n_clusters=cluster_num)
             optimal_policy = []
-            # groups = [0]*len(data_list)
-            # policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
-            #                                             transforms.Resize(config['img_size']),
-            #                                             transforms.ToTensor()]) for i in range(len(policy_subset))]
-            # optimal_policy.append(policy)
-            for idx in range(len(groups)):
-                policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
+            groups = [list(range(len(traintest_dataset)))]
+            policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
                                                         transforms.Resize(config['img_size']),
-                                                        transforms.ToTensor()]) for i in np.where(skill_factor==idx)[0]]
-                if 'rect' in config['dataset']:
-                    policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
-                optimal_policy.append(policy)
+                                                        transforms.ToTensor()]) for i in range(len(policy_subset))]
+            optimal_policy.append(policy)
+            # for idx in range(len(groups)):
+            #     policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
+            #                                             transforms.Resize(config['img_size']),
+            #                                             transforms.ToTensor()]) for i in np.where(skill_factor==idx)[0]]
+                # if 'rect' in config['dataset']:
+                #     policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
+                # optimal_policy.append(policy)
             traintest_dataset.update_transform(optimal_policy, groups, True)
             traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
             if 'breakhis' in config['dataset']:
@@ -272,6 +272,13 @@ if __name__ == '__main__':
                     with open('./proxy_config.yaml') as f:
                         proxy_cfg = yaml.load(f,Loader=yaml.FullLoader)
                     args.proxy_config = proxy_cfg
+                if args.GD:
+                    save_name += '_GD'
+                    args.GD_log_path = log_path.joinpath('GD')
+                    args.GD_save_path = save_path.joinpath('GD')
+                    with open('./GD_config.yaml') as f:
+                        GD_cfg = yaml.load(f,Loader=yaml.FullLoader)
+                    args.GD_config = GD_cfg
                 save_name += f'_itrs{itrs+1}'
                 args.save_name = save_name
                 # if os.path.exists(f'{save_path}/{save_name}.pth'):

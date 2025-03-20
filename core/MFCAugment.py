@@ -13,6 +13,7 @@ import pyDOE3
 import pickle
 # import geatpy as ea
 
+from tensorboardX import SummaryWriter
 from tqdm import tqdm
 from torchvision.transforms import transforms, ToTensor
 from torch.utils.data import Dataset, DataLoader
@@ -32,9 +33,9 @@ from scipy.optimize import linear_sum_assignment
 from EA.MFPSO import MFPSO
 from dataclasses import dataclass
 from core.utils import get_deepfeat
-from core.model import Proxy, RBFNetwork
+from core.model import Proxy, RBFNetwork, G_D
 from core.trainer import train_proxy, train_GD
-from core.dataCluster import constrained_kmeans_ilp
+# from core.dataCluster import constrained_kmeans_ilp
 
 class SingleTask(object):
     def __init__(self,dim:int,Lb,Ub,encode:list[int],fnc):
@@ -87,13 +88,13 @@ def evalFuncProxy(policy, params):
     p = proxies[group_id]
     p.eval()
     with torch.no_grad():
+        policy = torch.FloatTensor(policy).to(params['args'].device).unsqueeze(0)
         loss = p(policy)
         loss = loss.item()
     return loss
 
 def generate_proxy_data(params,sample_num=500):
     # 生成训练数据
-    print('Proxy generating starting')
     dataset = params['args'].dataset
     input_channels = len(params['Lb'])
     if os.path.exists(f'./training_data_{dataset}_{sample_num}.pkl'):
@@ -163,7 +164,10 @@ def MFCAugment(model, config, data_list, label_list, args, n_clusters=8, max_sam
     var_dim = n_op*3
     Lb = np.array([0]*var_dim)
     Ub = np.array(([total_op_num-1]*(n_op)) + ([mag_bin-1]*n_op) + ([prob_bin-1]*n_op))
-    tasks = [SingleTask(n_op*3,Lb,Ub,[0]*var_dim, evalFunc) for _ in range(len(groups))]
+    if args.proxy:
+        tasks = [SingleTask(n_op*3,Lb,Ub,[0]*var_dim, evalFuncProxy) for _ in range(len(groups))]
+    else:
+        tasks = [SingleTask(n_op*3,Lb,Ub,[0]*var_dim, evalFunc) for _ in range(len(groups))]
     params = {'feat_extractor':model,
               'data_list':new_data_list, 
               'feat_list':feat_list, 
@@ -175,26 +179,43 @@ def MFCAugment(model, config, data_list, label_list, args, n_clusters=8, max_sam
               'args':args,'config':config
               }
     if args.proxy:
-        sampled_policies, labels, task_id = generate_proxy_data(params, 1000)
-        cfg = args.proxy_config
-        # raise NotImplementedError
-        if cfg['model']['type'] == 'mlp':
-            proxies = [Proxy(var_dim, cfg['model']['fnum']) for _ in range(len(params['groups'])+1)] 
-        if cfg['model']['type'] == 'conv':
-            proxies = [ProxyConv(var_dim, cfg['model']['fnum']) for _ in range(len(params['groups'])+1)] 
-        elif cfg['model']['type'] == 'rbf':
-            proxies = [RBFNetwork(var_dim, cfg['model']['fnum'], 1, cfg['model']['gamma']) for _ in range(len(params['groups']))] 
-            # for i, p in enumerate(proxies):
-            #     p.init_centers_kmeans(sampled_policies[i])
-        for i, p in enumerate(proxies):
-            print(f'Proxy {i} training...')
-            proxies[i] = train_proxy(i, p, params, sampled_policies[i], labels[i])
-            print(f'Proxy {i} trained.')
-        print('Proxy generating finished')
+        if os.path.exists(f'./params_save/proxy/proxy_{args.dataset}.pth'):
+            proxies = torch.load(f'./params_save/proxy/proxy_{args.dataset}.pth')
+            params.update({'proxies':proxies})
+        else:
+            sampled_policies, labels, task_id = generate_proxy_data(params, 5000)
+            cfg = args.proxy_config
+            # raise NotImplementedError
+            if cfg['model']['type'] == 'mlp':
+                proxies = [Proxy(var_dim, cfg['model']['fnum']) for _ in range(len(params['groups']))] 
+            elif cfg['model']['type'] == 'rbf':
+                proxies = [RBFNetwork(var_dim, cfg['model']['fnum'], 1, cfg['model']['gamma']) for _ in range(len(params['groups']))] 
+                # for i, p in enumerate(proxies):
+                #     p.init_centers_kmeans(sampled_policies[i])
+            for i, p in enumerate(proxies):
+                print(f'Proxy {i} training...')
+                proxies[i] = train_proxy(i, p, params, sampled_policies[i], labels[i])
+                print(f'Proxy {i} trained.')
+            print('Proxy generating finished')
+            os.mkdirs('./params_save/proxy', exist_ok=True)
+            torch.save(proxies, f'./params_save/proxy/proxy_{args.dataset}.pth')
+            params.update({'proxies':proxies})
         raise NotImplementedError
-        
-    options = {'popsize':100,'maxgen':100,'rmp':0.3,'reps':2}
-    bestPop = MFPSO(tasks, options, params)
+    if args.GD:
+        sampled_policies, labels, task_id = generate_proxy_data(params, 500)
+        sampled_policies = np.concatenate(sampled_policies, axis=0).reshape(-1,var_dim)
+        labels = np.concatenate(labels, axis=0).reshape(-1,1)
+        task_id = np.concatenate(task_id, axis=0).reshape(-1,1)
+        cfg = args.GD_config
+        train_GD(params, sampled_policies, labels, task_id)
+        print('GD trained.')
+        os.mkdirs('./params_save/proxy', exist_ok=True)
+        torch.save(proxies, f'./params_save/proxy/proxy_{args.dataset}.pth')
+        params.update({'proxies':proxies})
+        raise NotImplementedError
+    options = {'popsize':100,'maxgen':100,'rmp':0.3,'reps':2,'proxy_update':10}
+    writer = [SummaryWriter(log_dir=str(args.proxy_log_path.joinpath(args.save_name,'MFPSO',f'task{x}'))) for x in range(len(tasks))]
+    bestPop = MFPSO(tasks, options, params, writer)
     bestPolicy = [[np.floor(bestPop[i,j].pbest*(Ub-Lb)+Lb)] for i in range(options['reps']) for j in range(options['popsize'])]
     skillFactor = np.array([bestPop[i,j].skill_factor for i in range(options['reps']) for j in range(options['popsize'])])
 

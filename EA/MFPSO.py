@@ -4,12 +4,11 @@ from scipy.optimize import minimize
 from EA.Particle import Particle
 from tqdm import tqdm
 import joblib
-def MFPSO(Tasks, options, params):
+def MFPSO(Tasks, options, params, writer):
     pop = options['popsize']
     gen = options['maxgen']
     rmp = options['rmp']
     reps = options['reps']
-
     if pop % 2 != 0:
         pop += 1
     
@@ -41,7 +40,7 @@ def MFPSO(Tasks, options, params):
     TotalEvaluations = np.zeros((reps, gen))  # 到目前为止的任务评估总数
     bestobj = np.inf * np.ones(no_of_tasks) # 到目前为止找到的任务最优目标值
     bestPop = np.zeros((reps, pop), dtype=object)
-    with joblib.Parallel(n_jobs=6, backend='threading') as parallel:
+    with joblib.Parallel(n_jobs=1, backend='threading') as parallel:
         for rep in range(reps):
             population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
             
@@ -92,8 +91,8 @@ def MFPSO(Tasks, options, params):
                 st = time.time()
                 w1 = wmax - (wmax - wmin) * ite / 1000
                 
-                if converge >= 20:
-                    break
+                # if converge >= 20:
+                #     break
                 if ite % 10 == 0 and noImpove >= 20:
                     # 重启
                     for i in range(pop):
@@ -137,7 +136,9 @@ def MFPSO(Tasks, options, params):
                         noImpove += 1
                     EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
                 bestobj_str = [f'{o:.2f}' for o in bestobj]
-                print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
+                # print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
+                for k in range(no_of_tasks):
+                    writer[k].add_scalar(f'Best Fitness/Rep{rep}', bestobj[k], ite)
                 if noImpove > 0:
                     converge += 1
                 else:

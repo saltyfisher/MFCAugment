@@ -100,30 +100,69 @@ class AddNoise:
     def __call__(self, tensor):
         noise = (torch.rand(tensor.shape)*(self.max-self.min)).to(tensor.device)
         return torch.clamp(tensor + noise, 0., 1.)
-
-import torch
-
-class PearsonCorrelationLoss(nn.Module):
-    def __init__(self, eps=1e-8):
-        super().__init__()
-        self.eps = eps  # 防止除以零的小常数
-
-    def forward(self, pred, target):
-        # 确保输入维度一致
-        assert pred.shape == target.shape, "预测值和目标值形状需一致"
-
-        # 中心化数据（减去均值）
-        pred_centered = pred - torch.mean(pred)
-        target_centered = target - torch.mean(target)
-
-        # 计算协方差和标准差
-        covariance = torch.sum(pred_centered * target_centered, dim=1)
-        pred_std = torch.sqrt(torch.sum(pred_centered ** 2, dim=1) + self.eps)
-        target_std = torch.sqrt(torch.sum(target_centered ** 2, dim=1) + self.eps)
-
-        # 计算皮尔逊相关系数
-        pearson_corr = covariance / (pred_std * target_std)
-
-        # 损失 = 1 - 相关系数（最小化损失等价于最大化相关性）
-        loss = 1 - pearson_corr.mean()
-        return loss
+    
+class LayerMonitor:
+    def __init__(self, model, writer, log_interval=1):
+        self.writer = writer
+        self.log_interval = log_interval
+        self.step = 0
+        
+        # 自动注册所有层的hook
+        self.handles = []
+        for name, layer in model.named_modules():
+            if not isinstance(layer, (nn.ModuleList, nn.Sequential)):
+                handle = layer.register_forward_hook(
+                    self._create_hook(name)
+                )
+                self.handles.append(handle)
+    
+    def _create_hook(self, layer_name):
+        def hook(module, input, output):
+            # 每隔指定步数记录
+            if len(output) == 2:
+                return output
+            if self.step % self.log_interval == 0:
+                with torch.no_grad():
+                    # 标量统计
+                    self.writer.add_scalar(
+                        f"activations/{layer_name}/mean", 
+                        output.mean(), self.step
+                    )
+                    self.writer.add_scalar(
+                        f"activations/{layer_name}/std",
+                        output.std(), self.step
+                    )
+                    
+                    # 直方图
+                    self.writer.add_histogram(
+                        f"activations_hist/{layer_name}",
+                        output.cpu(),
+                        self.step
+                    )
+                    
+                    # 梯度统计（如果存在）
+                    if output.requires_grad:
+                        output.register_hook(
+                            lambda grad: self._grad_hook(grad, layer_name)
+                        )
+            return output
+        return hook
+    
+    def _grad_hook(self, grad, layer_name):
+        self.writer.add_scalar(
+            f"gradients/{layer_name}/mean",
+            grad.mean(), self.step
+        )
+        self.writer.add_histogram(
+            f"gradients_hist/{layer_name}",
+            grad.cpu(),
+            self.step
+        )
+    
+    def update_step(self):
+        self.step += 1
+        
+    def remove(self):
+        """移除所有hook"""
+        for handle in self.handles:
+            handle.remove()
