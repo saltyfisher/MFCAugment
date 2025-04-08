@@ -1,4 +1,6 @@
 import math
+import random
+import numpy as np
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -126,7 +128,8 @@ class MyAugment(torch.nn.Module):
         self.interpolation = interpolation
         self.fill = fill
         self.num_ops = num_ops
-        self.policy = torch.t(torch.tensor(policy).reshape(-1,num_ops))
+        # self.policy = torch.t(torch.tensor(policy).reshape(-1,num_ops))
+        self.policy = policy
         self.mag_neighbor_range = mag_neigbor_range
         self.magnitude = magnitude
         self.resize = resize
@@ -170,19 +173,51 @@ class MyAugment(torch.nn.Module):
                 fill = [float(f) for f in fill]
 
         aug_space = augmentation_space(self.mag_bin, self.prob_bin, (height, width))
-        for p in self.policy:
-            op_index, magnitude_index, prob_index = map(int,p.tolist())
-            op_name = list(aug_space.keys())[op_index]
+        # for p in self.policy:
+        #     op_index, magnitude_index, prob_index = map(int,p.tolist())
+        #     op_name = list(aug_space.keys())[op_index]
+        #     magnitudes, prob, signed = aug_space[op_name]
+        #     if magnitudes.ndim > 0:
+        #         magnitudes = magnitudes[:magnitude_index+1]
+        #         magnitude = float(magnitudes[torch.randint(magnitudes.shape[0], (1,))].item())
+        #         # magnitude = float(magnitudes[magnitude_index].item())
+        #     else:
+        #         magnitude = 0.0
+        #     prob = float(prob[prob_index].item())
+        #     if signed and torch.randint(2, (1,)):
+        #         magnitude *= -1.0
+        #     if torch.randn(1) < prob:
+        #         img = _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
+        # if self.resize:
+        #     img = F.resize(img, self.resize_size)
+        img = self.augment_img(img, aug_space, fill)
+        return img
+    
+    def augment_img(self, img, aug_space, fill):
+        all_ops = self.policy['op_index']
+        idx = np.random.randint(len(all_ops))
+        ops = all_ops[idx][0].tolist()
+        all_magnitude = self.policy['magnitude_index'][idx]
+        magnitude = all_magnitude[np.random.randint(all_magnitude.shape[0]),:]
+        all_prob = self.policy['prob_index'][idx]
+        prob = all_prob[np.random.randint(all_prob.shape[0]),:]
+        for i, p in enumerate(ops):
+            op_name = list(aug_space.keys())[int(p)]
             magnitudes, prob, signed = aug_space[op_name]
+            magnitude_index = int(magnitude[i])
+            prob_index = int(prob[i])
             if magnitudes.ndim > 0:
-                magnitude = float(magnitudes[magnitude_index].item()) if magnitudes.ndim > 0 else 0.0
+                magnitudes = magnitudes[:magnitude_index+1]
+                m = float(magnitudes[random.randint(0, magnitudes.shape[0]-1)].item())
             else:
-                magnitude = 0.0
-            prob = float(prob[prob_index].item())
+                m = 0.0
+                # magnitude = float(magnitudes[magnitude_index].item())
+            p = float(prob[prob_index].item())
             if signed and torch.randint(2, (1,)):
-                magnitude *= -1.0
-            if torch.randn(1) < prob:
-                img = _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
+                m *= -1.0
+            if torch.randn(1) < p:
+                img = _apply_op(img, op_name, m, interpolation=self.interpolation, fill=fill)
         if self.resize:
             img = F.resize(img, self.resize_size)
+
         return img

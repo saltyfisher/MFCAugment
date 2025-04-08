@@ -82,15 +82,18 @@ def KL_loss_all(p, q):
     return loss
 
 def loss_hinge_dis(dis_fake, dis_real):
-    loss_dist = torch.mean(F.relu(1. - dis_real))
-    loss_dist += torch.mean(F.relu(1. + dis_fake))
+    # loss_dist = torch.mean(dis_real)
+    # loss_dist += torch.mean(-dis_fake)
+    loss_dist = torch.mean(F.relu(1. + dis_real))
+    loss_dist += torch.mean(F.relu(1. - dis_fake))
     return loss_dist
 
 def loss_domain(pred_real, y_real):
-    return F.cross_entropy(pred_real, y_real)
+    return F.cross_entropy(pred_real, y_real.squeeze())
 def loss_hinge_gen(dis_fake):
-  loss = -torch.mean(dis_fake)
-  return loss
+    # loss = torch.mean(-dis_fake)
+    loss = torch.mean(F.relu(1 - dis_fake))
+    return loss
 
 class AddNoise:
     def __init__(self, min=0.0, max=0.1):

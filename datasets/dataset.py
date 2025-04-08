@@ -19,17 +19,7 @@ class Mydata(Dataset):
     
     def __getitem__(self, idx):
         image = Image.open(self.full_filenames[idx])
-        if self.mfc:
-            t_idx = None
-            for i, group in enumerate(self.groups):
-                if idx in group:
-                    t_idx = i
-                    break
-            all_transforms = self.transform[t_idx]
-            transform = all_transforms[random.randint(0, len(all_transforms)-1)]
-        else:
-            transform = self.transform
-        image = transform(image)
+        image = self.transform(image)
         label = self.labels[idx]
         return image, label
 

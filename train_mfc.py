@@ -184,9 +184,9 @@ def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log
                 policy_subset, skill_factor, groups = MFCAugment(pretrain_model, config, data_list, label_list, args, n_clusters=cluster_num)
             optimal_policy = []
             groups = [list(range(len(traintest_dataset)))]
-            policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
+            policy = torchvision.transforms.Compose([MyAugment(policy_subset,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
                                                         transforms.Resize(config['img_size']),
-                                                        transforms.ToTensor()]) for i in range(len(policy_subset))]
+                                                        transforms.ToTensor()])
             optimal_policy.append(policy)
             # for idx in range(len(groups)):
             #     policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
@@ -254,6 +254,8 @@ if __name__ == '__main__':
                 if args.MFC:
                     save_path.joinpath('mfc')
                     log_path.joinpath('mfc')
+                    args.log_path = log_path
+                    args.save_path = save_path
                 print('Pretrain start')
                 if os.path.exists(f'{save_name}_pretrained.pth'):
                     model = torch.load(f'{save_name}_pretrained.pth')
@@ -284,7 +286,7 @@ if __name__ == '__main__':
                 # if os.path.exists(f'{save_path}/{save_name}.pth'):
                 #     continue
                 train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name)
-                break   
+                # break   
 
 
 

@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from scipy.optimize import minimize
 
 class Particle:
@@ -20,7 +21,8 @@ class Particle:
         if self.skill_factor == -1:
             for i in range(no_of_tasks):
                 params.update({'task_id':i})
-                cost = Tasks[i].evaluate(self.rnvec, params)
+                # cost = Tasks[i].evaluate(self.rnvec, params)
+                cost = Tasks[i].evaluate(self, params)
                 self.factorial_costs[i] = cost
                 calls += funcCount
         else:
@@ -28,7 +30,8 @@ class Particle:
             for i in range(no_of_tasks):
                 if self.skill_factor == i:
                     params.update({'task_id':i})
-                    cost = Tasks[self.skill_factor].evaluate(self.rnvec, params)
+                    # cost = Tasks[self.skill_factor].evaluate(self.rnvec, params)
+                    cost = Tasks[self.skill_factor].evaluate(self, params)
                     self.factorial_costs[self.skill_factor] = cost
                     calls = funcCount
                     break
@@ -58,6 +61,32 @@ class Particle:
             self.pbest = self.rnvec.copy()
         return self
 
+    def velocityUpdateGD(self, GD, DCls, all_pb, all_sf, gbest, rmp, w1, c1, c2, c3, writer):
+        cls_prob = []
+        tps = []
+        GD.eval()
+        with torch.no_grad():
+            device = next(GD.parameters()).device
+            all_pb = torch.FloatTensor(np.array(all_pb)).to(device)
+            y_fake = torch.LongTensor(np.repeat(self.skill_factor,all_pb.shape[0])).unsqueeze(1).to(device)
+            tp, _, _ = GD(all_pb, y_fake=y_fake, train_G=True)
+            tp_feat = GD.get_G_feat()
+            cls_prob = DCls(tp_feat).softmax(dim=1)
+            idx = torch.argmax(cls_prob[:,self.skill_factor], dim=0).detach().cpu().numpy()            
+            tp = tp[idx].detach().cpu().numpy()
+        len_velocity = len(self.velocity)
+        if np.random.rand() < cls_prob[idx, self.skill_factor]:
+            self.velocity = w1 * self.velocity + \
+                            c1 * np.random.rand(len_velocity) * (self.pbest - self.rnvec) + \
+                            c2 * np.random.rand(len_velocity) * (gbest[self.skill_factor] - self.rnvec) + \
+                            c3 * np.random.rand(len_velocity) * (tp - self.rnvec)
+            if np.random.rand() < 0.5:
+                self.skill_factor = all_sf[idx]
+        else:
+            self.velocity = w1 * self.velocity + \
+                            c1 * np.random.rand(len_velocity) * (self.pbest - self.rnvec) + \
+                            c2 * np.random.rand(len_velocity) * (gbest[self.skill_factor] - self.rnvec)
+        return self
     # velocity update
     def velocityUpdate(self, gbest, rmp, w1, c1, c2, c3):
         len_velocity = len(self.velocity)

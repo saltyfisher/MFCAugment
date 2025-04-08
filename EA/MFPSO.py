@@ -4,6 +4,7 @@ from scipy.optimize import minimize
 from EA.Particle import Particle
 from tqdm import tqdm
 import joblib
+import pickle
 def MFPSO(Tasks, options, params, writer):
     pop = options['popsize']
     gen = options['maxgen']
@@ -33,7 +34,7 @@ def MFPSO(Tasks, options, params, writer):
     D_multitask = int(np.max(D))
     
     options = {'disp': False, 'maxiter': 2}  # 个体学习的设置
-    
+    recorder = [{'Pops':[],'Fval':[],'SkillFactor':[]} for _ in range(reps)]
     fnceval_calls = np.zeros(reps)
     calls_per_individual = np.zeros(pop)
     EvBestFitness = np.zeros((no_of_tasks * reps, gen))  # 到目前为止找到的最佳适应度
@@ -54,7 +55,9 @@ def MFPSO(Tasks, options, params, writer):
                 population[r[2]] = r[0]
             TotalEvaluations[rep, 0] = fnceval_calls[rep]
             print(f'Initializing:{time.time()-st:.2f}')
-            
+            recorder[rep]['Pops'].append([population[i].rnvec for i in range(pop)])
+            recorder[rep]['Fval'].append([population[i].factorial_costs[population[i].skill_factor] for i in range(pop)])
+            recorder[rep]['SkillFactor'].append([population[i].skill_factor for i in range(pop)])
             factorial_cost = np.zeros(pop)
             for i in range(no_of_tasks):      
                 for j in range(pop):
@@ -136,19 +139,39 @@ def MFPSO(Tasks, options, params, writer):
                         noImpove += 1
                     EvBestFitness[i + 2 * (rep - 1), ite-1] = bestobj[i]
                 bestobj_str = [f'{o:.2f}' for o in bestobj]
-                # print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
+                print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
                 for k in range(no_of_tasks):
                     writer[k].add_scalar(f'Best Fitness/Rep{rep}', bestobj[k], ite)
+                formatted_pops = []
+                for p in population:
+                    ind = [f'{x:.3f}' for x in p.rnvec]
+                    formatted_pop = '   '.join(ind)
+                    formatted_pops.append(formatted_pop)
+                formatted_pops = '\n'.join(formatted_pops)
+                writer[0].add_text(f'Population/Pop_Rep{rep}', formatted_pops, ite)
+                formatted_bestinds = []
+                for p in gbest:
+                    ind = [f'{x:.3f}' for x in p]
+                    formatted_bestind = '   '.join(ind)
+                    formatted_bestinds.append(formatted_bestind)
+                formatted_bestinds = '\n'.join(formatted_bestinds)
+                writer[0].add_text(f'Population/Gbest_Rep{rep}', formatted_bestinds, ite)
                 if noImpove > 0:
                     converge += 1
                 else:
                     converge = 0
                 ite += 1
+                recorder[rep]['Pops'].append([population[i].rnvec for i in range(pop)])
+                recorder[rep]['Fval'].append([population[i].factorial_costs[population[i].skill_factor] for i in range(pop)])
+                recorder[rep]['SkillFactor'].append([population[i].skill_factor for i in range(pop)])
+                factorial_cost = np.zeros(pop)
             bestPop[rep, :] = population           
-            
+    
     data_MFPSO = {
         'EvBestFitness': EvBestFitness,
         'bestInd_data': bestInd_data,
         'TotalEvaluations': TotalEvaluations
     }
+    with open('./MFPSO_data.pkl', 'wb') as f:
+        pickle.dump(recorder, f)
     return bestPop
