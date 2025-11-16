@@ -1,0 +1,30 @@
+aug: randaugment
+augmentation_search_space: fixed_standard
+batch: 64
+cutout: 0
+dataset: breakhis2200X
+epoch: 180
+gpus: 32
+img_size:
+- 450
+- 450
+load_main_model: true
+lr: 0.2
+lr_schedule:
+  type: resnet
+  warmup:
+    epoch: 3
+    multiplier: 4
+model:
+  type: resnet18
+optimizer:
+  clip: 0
+  decay: 0.0001
+  nesterov: true
+  type: sgd
+randaug:
+  M: 0
+  N: 0
+  weights:
+  - 0.0
+  - 1.0

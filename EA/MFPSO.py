@@ -41,6 +41,7 @@ def MFPSO(Tasks, options, params, writer):
     TotalEvaluations = np.zeros((reps, gen))  # 到目前为止的任务评估总数
     bestobj = np.inf * np.ones(no_of_tasks) # 到目前为止找到的任务最优目标值
     bestPop = np.zeros((reps, pop), dtype=object)
+    bestInd_data = np.zeros((reps, no_of_tasks), dtype=object)
     with joblib.Parallel(n_jobs=1, backend='threading') as parallel:
         for rep in range(reps):
             population = [Particle(D_multitask, no_of_tasks, i) for i in range(pop)]
@@ -67,9 +68,9 @@ def MFPSO(Tasks, options, params, writer):
                 for j in range(pop):
                     population[j].factorial_ranks[i] = j
                 bestobj[i] = population[0].factorial_costs[i]
+                bestInd_data[rep, i] = population[0]
                 gbest = np.array([population[0].rnvec for _ in range(no_of_tasks)])
                 EvBestFitness[i + 2 * (rep - 1), 0] = bestobj[i]
-                bestInd_data = np.array([population[0] for _ in range(no_of_tasks)])
             
             for i in range(pop):
                 min_rank = np.min(population[i].factorial_ranks)
@@ -94,8 +95,8 @@ def MFPSO(Tasks, options, params, writer):
                 st = time.time()
                 w1 = wmax - (wmax - wmin) * ite / 1000
                 
-                # if converge >= 20:
-                #     break
+                if converge >= 30:
+                    break
                 if ite % 10 == 0 and noImpove >= 20:
                     # 重启
                     for i in range(pop):
@@ -133,7 +134,7 @@ def MFPSO(Tasks, options, params, writer):
                     if population[0].factorial_costs[i] <= bestobj[i]:
                         bestobj[i] = population[0].factorial_costs[i]                   
                         gbest[i, :] = population[0].rnvec
-                        bestInd_data[i, ] = population[0]
+                        bestInd_data[rep, i] = population[0]
                         noImpove = 0
                     else:
                         noImpove += 1
@@ -174,4 +175,5 @@ def MFPSO(Tasks, options, params, writer):
     }
     with open('./MFPSO_data.pkl', 'wb') as f:
         pickle.dump(recorder, f)
-    return bestPop
+    skillFactor = [recorder[rep]['SkillFactor'][-1] for rep in range(reps)]
+    return bestPop, skillFactor, bestInd_data

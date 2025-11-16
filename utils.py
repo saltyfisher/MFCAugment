@@ -1,0 +1,30 @@
+import argparse
+
+def initialize_setting():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config',type=str,default='')
+    parser.add_argument('--num_policy',type=int,default=5)
+    parser.add_argument('--num_op',type=int,default=2)
+    parser.add_argument('--device',type=int,default=0)
+    parser.add_argument('--use_parallel',action='store_true')
+    parser.add_argument('--online',action='store_true')
+    parser.add_argument('--MT',action='store_true')
+    parser.add_argument('--dataset',type=str,default='')
+    parser.add_argument('--batch_size',type=int,default=64)
+    parser.add_argument('--aug_type',type=str,default='none')
+    parser.add_argument('--MFC',action='store_true')
+    parser.add_argument('--resize',action='store_false')
+    parser.add_argument('--group',action='store_true')
+    parser.add_argument('--mag_bin',type=int,default=30)
+    parser.add_argument('--use_prob',action='store_true')
+    parser.add_argument('--prob_bin',type=int,default=10)
+    parser.add_argument('--proxy',action='store_true')
+    parser.add_argument('--proxy_batch_size',type=int,default=64)
+    parser.add_argument('--proxy_epochs',type=int,default=20)
+    parser.add_argument('--GD',action='store_true')
+    parser.add_argument('--GD_batch_size',type=int,default=32)
+    parser.add_argument('--GD_epochs',type=int,default=20)
+    parser.add_argument('--GD_update',type=int,default=1)
+    args = parser.parse_args()
+    
+    return args

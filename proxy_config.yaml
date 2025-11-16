@@ -1,0 +1,15 @@
+batch_size: 32
+epoch: 200
+optimizer:
+  # type: adam
+  type: sgd
+  lr: 5.0e-2
+  decay: 1.0e-3
+  clip: 5
+model:
+  # type: rbf
+  type: mlp
+  # type: conv
+  gamma: 0.1
+  fnum: 256
+

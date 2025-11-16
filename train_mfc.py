@@ -11,14 +11,15 @@ import yaml
 import subprocess
 import time
 import torchvision
-
+import argparse
+import models
 # from core.MFCAugment import MFCAugment
 from PIL import Image
 from torchvision import transforms
 from sklearnex import patch_sklearn
 from copy import deepcopy
 from pathlib import Path
-from sklearn.metrics import f1_score,precision_score,recall_score
+# from sklearn.metrics import f1_score,precision_score,recall_score
 from collections import OrderedDict
 from tensorboardX import SummaryWriter
 from torch import nn, optim
@@ -30,16 +31,18 @@ from networks import get_model, num_class
 from utils import initialize_setting
 from theconf import Config as C
 from lr_scheduler import adjust_learning_rate_resnet
-from metrics import accuracy, Accumulator, f1_score,precision_score,recall_score
+from metrics import Accumulator, f1_score,precision_score,recall_score,accuracy_score,auc_score
 from warmup_scheduler import GradualWarmupScheduler
 from common import get_logger
 from core.MFCAugment import MFCAugment
-from core.augmentations import MyAugment
+from core.augmentations import MyAugment, RandAugment, TrivialAugmentWide
+import csv
+import statistics
 
 logger = get_logger('MFC')
 logger.setLevel(logging.DEBUG)
 
-def run_epoch(args, config, model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None,sample_pairing_loader=None):
+def run_epoch(args, num_classes, model, loader, loss_fn, optimizer):
     cnt = 0
     eval_cnt = 0
     total_steps = len(loader)
@@ -66,143 +69,171 @@ def run_epoch(args, config, model, loader, loss_fn, optimizer, desc_default='', 
 
         all_labels.extend(label)
         all_preds.extend(preds.detach())
-        if config['optimizer'].get('clip', 5) > 0:
-            nn.utils.clip_grad_norm_(model.parameters(), config['optimizer'].get('clip', 5))
-        if (steps-1) % config.get('step_optimizer_every', 1) == config.get('step_optimizer_nth_step', 0): # default is to step on the first step of each pack
-            if optimizer:
-                optimizer.step()
+        # if config['optimizer'].get('clip', 5) > 0:
+        #     nn.utils.clip_grad_norm_(model.parameters(), config['optimizer'].get('clip', 5))
+        # if (steps-1) % config.get('step_optimizer_every', 1) == config.get('step_optimizer_nth_step', 0): # default is to step on the first step of each pack
+        if optimizer:
+            optimizer.step()
         cnt += len(data)
 
-        if scheduler is not None:
-            scheduler.step(epoch - 1 + float(steps) / total_steps)
+        # if scheduler is not None:
+        #     scheduler.step(epoch - 1 + float(steps) / total_steps)
         metrics.add_dict({'loss': loss.item()})
         #before_load_time = time()
         # del preds, loss, data, label
         if optimizer:
             metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
-    precision = precision_score(config, torch.stack(all_preds), torch.stack(all_labels))
-    recall = recall_score(config, torch.stack(all_preds), torch.stack(all_labels))
-    f1 = f1_score(config, torch.stack(all_preds), torch.stack(all_labels))
+    precision = precision_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
+    recall = recall_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
+    f1 = f1_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
+    accuracy = accuracy_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
+    auc = auc_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
     metrics.add_dict({
-        'precision': precision[0].item(),
-        'recall': recall[0].item(),
-        'f1':f1[0].item()
+        'accuracy': accuracy.item(),
+        'precision': precision.item(),
+        'recall': recall.item(),
+        'f1':f1.item(),
+        'auc':auc.item()
     })
     metrics.metrics['loss'] = metrics.metrics['loss']/cnt
-    if writer is not None:
-        for key, value in metrics.items():
-            writer.add_scalar(key, value, epoch)
+    # if writer is not None:
+    #     for key, value in metrics.items():
+    #         writer.add_scalar(key, value, epoch)
     return metrics
 
-def train_val(gpu_id, task_id, args, config, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None):
-    if save_path is not None:
-        writers = [SummaryWriter(log_dir=str(log_path.joinpath(save_name,x))) for x in ['train', 'valid', 'test']]
-    else:
-        writers = [None for x in ['train', 'valid', 'test']]
-    model = get_model(config['model'], args.batch_size, num_class(config['dataset']), writer=writers[0])
-    model = model.to(f'cuda:{args.device}')
+def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None):
+    
     criterion = nn.CrossEntropyLoss()
-    if config['optimizer']['type'] == 'sgd':
-        optimizer = optim.SGD(
-            model.parameters(),
-            lr=config['lr'],
-            momentum=config['optimizer'].get('momentum', 0.9),
-            weight_decay=config['optimizer']['decay'],
-            nesterov=config['optimizer']['nesterov']
-        )
-    elif config['optimizer']['type'] == 'adam':
-        optimizer = optim.Adam(
-            model.parameters(),
-            lr=config['lr'],
-            betas=(config['optimizer'].get('momentum',.9),.999)
-        )
+    # if config['optimizer']['type'] == 'sgd':
+    #     optimizer = optim.SGD(
+    #         model.parameters(),
+    #         lr=config['lr'],
+    #         momentum=config['optimizer'].get('momentum', 0.9),
+    #         weight_decay=config['optimizer']['decay'],
+    #         nesterov=config['optimizer']['nesterov']
+    #     )
+    # elif config['optimizer']['type'] == 'adam':
+    # optimizer = optim.Adam(
+    #     model.parameters(),
+    #     lr=config['lr'],
+    #     betas=(config['optimizer'].get('momentum',.9),.999)
+    # )
 
-    lr_scheduler_type = config['lr_schedule'].get('type', 'cosine')
-    if lr_scheduler_type == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0.)
-    elif lr_scheduler_type == 'resnet':
-        scheduler = adjust_learning_rate_resnet(config,optimizer)
-    elif lr_scheduler_type == 'constant':
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda e: 1.)
+    # lr_scheduler_type = config['lr_schedule'].get('type', 'cosine')
+    # if lr_scheduler_type == 'cosine':
+    #     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0.)
+    # elif lr_scheduler_type == 'resnet':
+    #     scheduler = adjust_learning_rate_resnet(config,optimizer)
+    # elif lr_scheduler_type == 'constant':
+    #     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda e: 1.)
 
-    if config['lr_schedule'].get('warmup', None):
-        scheduler = GradualWarmupScheduler(
-            optimizer,
-            multiplier=config['lr_schedule']['warmup']['multiplier'],
-            total_epoch=config['lr_schedule']['warmup']['epoch'],
-            after_scheduler=scheduler
-        )
-    max_epoch = config['epoch']
+    # if config['lr_schedule'].get('warmup', None):
+    #     scheduler = GradualWarmupScheduler(
+    #         optimizer,
+    #         multiplier=config['lr_schedule']['warmup']['multiplier'],
+    #         total_epoch=config['lr_schedule']['warmup']['epoch'],
+    #         after_scheduler=scheduler
+    #     )
+    max_epoch = args.num_epochs
     epoch_start = 1
     rs = {'train':[],'test':[]}
     best_f1 = 0
+    best_metrics = None
 
-    traintest_dataset,test_dataset = get_data(config,config['dataset'],dataroot)
-    transform = torchvision.transforms.Compose([transforms.Resize(config['img_size']),
-                                                    transforms.ToTensor()])
-    traintest_dataset.update_transform(transform, [], False)
-    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    if 'breakhis' in config['dataset']:
-        testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-    else:
-        testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+    traintest_dataset,test_dataset,resize_size,transform_train = get_data(args.strategy,args.dataset,args.magnification,dataroot)
+    # if args.mfc:
+        # if 'breakhis' in args.save_name:
+        #     transform_raw = [transforms.Compose([TrivialAugmentWide(),
+        #                     transforms.Resize(resize_size, interpolation=Image.BICUBIC),
+        #                     transforms.ToTensor()])]
+        # else:
+        #     transform_raw = [transforms.Compose([RandAugment(),
+        #                         transforms.Resize(resize_size, interpolation=Image.BICUBIC),
+        #                         transforms.ToTensor()])]
+        # transform_raw = [transforms.Compose([transforms.Resize(resize_size, interpolation=Image.BICUBIC),
+        #                         transforms.ToTensor()])]
+        # traintest_dataset.update_transform([], transform_raw, [])
+    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+    testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     data_list, label_list = traintest_dataset.get_all_files()
-    for epoch in tqdm(range(epoch_start, max_epoch+1),desc=f"Task{task_id} Iter{itrs}"):
+
+    policy = []
+    policy_subset = []
+    for epoch in range(epoch_start, max_epoch+1):
         model.train()     
-        rs['train'].append(run_epoch(args,config,model, traintestloader, criterion, optimizer, desc_default='', epoch=epoch, writer=writers[0], verbose=0, scheduler=None,sample_pairing_loader=None))
+        metrics = run_epoch(args,num_classes,model, traintestloader, criterion, optimizer)
+        rs['train'].append(metrics)
+        loss = metrics['loss']
+        accuracy = metrics['accuracy']
+        print(f'Epoch [{epoch}/{max_epoch}] - Train Loss: {loss:.4f}, Train Acc: {accuracy:.4f}')
         model.eval()
-        scheduler.step()
+        # scheduler.step()
         result = OrderedDict()
         
         if (save_path is not None) and (epoch % 20 == 0 or epoch == max_epoch):
             with torch.no_grad():
-                rs['test'].append(run_epoch(args,config,model, testloader
-                , criterion, None, desc_default='*test', epoch=epoch, writer=writers[2], verbose=True))
-
+                metrics = run_epoch(args,num_classes,model, testloader
+                , criterion, None)
+                rs['test'].append(metrics)
+                print(f'Epoch [{epoch+1}/{max_epoch+1}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
             if rs['test'][-1]['f1'] > best_f1:
                 best_f1 = rs['test'][-1]['f1']
-                if save_path and config.get('save_model', True):
-                    # logger.info('save model@%d to %s' % (epoch, save_path))
-                    torch.save({
-                        'epoch': epoch,
-                        'log': {
-                            'train': [rs['train'][i].get_dict() for i in range(len(rs['train']))],
-                            'test': [rs['test'][i].get_dict() for i in range(len(rs['test']))],
-                        },
-                        'optimizer': optimizer.state_dict(),
-                        'model': model.state_dict(),
-                    }, str(save_path.joinpath(save_name+'.pth')))   
-
-        if args.MFC and epoch == epoch_start:
-            if 'lym' in config['dataset']:
-                cluster_num = 3
-            if 'breakhis8' in config['dataset']:
+                best_metrics = rs['test'][-1]
+            if save_path:
+                # logger.info('save model@%d to %s' % (epoch, save_path))
+                
+                torch.save({
+                'epoch': epoch,
+                'log': {
+                    'train': [rs['train'][i].get_dict() for i in range(len(rs['train']))],
+                    'test': [rs['test'][i].get_dict() for i in range(len(rs['test']))],
+                },
+                # 'optimizer': optimizer.state_dict(),
+                # 'model': model.state_dict(),
+                'BestPolicy':policy
+            }, str(save_path.joinpath(save_name+'.pth')))   
+        if args.online:
+            trigger = (epoch % 40 == 0)
+            # trigger = (epoch == epoch_start)
+        else:
+            trigger = (epoch == epoch_start)
+        if args.mfc and trigger:
+            if 'lym' in args.dataset:
+                cluster_num = 2
+            elif 'breakhis' in args.dataset:
                 cluster_num = 8
-            if pretrain_model is None:
-                policy_subset, skill_factor, groups = MFCAugment(model, config, data_list, label_list, args, n_clusters=cluster_num)
+            elif 'chestct' in args.dataset:
+                cluster_num = 3
             else:
-                policy_subset, skill_factor, groups = MFCAugment(pretrain_model, config, data_list, label_list, args, n_clusters=cluster_num)
-            optimal_policy = []
-            groups = [list(range(len(traintest_dataset)))]
-            policy = torchvision.transforms.Compose([MyAugment(policy_subset,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_op),
-                                                        transforms.Resize(config['img_size']),
-                                                        transforms.ToTensor()])
-            optimal_policy.append(policy)
-            # for idx in range(len(groups)):
-            #     policy = [torchvision.transforms.Compose([MyAugment(policy_subset[i],mag_bin=args.mag_bin,             prob_bin=args.prob_bin,num_ops=args.num_op),
-            #                                             transforms.Resize(config['img_size']),
-            #                                             transforms.ToTensor()]) for i in np.where(skill_factor==idx)[0]]
-                # if 'rect' in config['dataset']:
-                #     policy = [p.insert(0,transforms.Lambda(lambda image: transforms.F.crop(image,94,94,512,512))) for p in policy]
-                # optimal_policy.append(policy)
-            traintest_dataset.update_transform(optimal_policy, groups, True)
-            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
-            if 'breakhis' in config['dataset']:
-                testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+                cluster_num = 4
+            policy_subset, skill_factor, groups = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num)
+            if args.resize:
+                    optimal_policy = [torchvision.transforms.Compose([transforms.Resize(resize_size),MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops),
+                                                        transforms.ToTensor()]) for p in policy_subset]
             else:
-                testloader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+                optimal_policy = [torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops),
+                                                        transforms.Resize(resize_size),
+                                                        transforms.ToTensor()]) for p in policy_subset]
+            if args.group:
+                g = [0]*len(traintest_dataset)
+                for groups_idx, ind_idx in enumerate(groups):
+                    for i in ind_idx:
+                        g[i] = groups_idx
+                groups = g
+            else:
+                groups = np.unique(np.concatenate(groups))
+            policy.append(policy_subset)
+            traintest_dataset.update_transform(optimal_policy, transform_train, groups)
+            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+            testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    return model
+    # 输出本次训练的最优结果
+    if best_metrics is not None:
+        print(f"最佳测试结果 (第 {itrs + 1} 次实验):")
+        for key, value in best_metrics.items():
+            print(f"  {key}: {value:.4f}")
+    
+    return model, best_metrics
     
 def run_python_file(args):
     # command = [python_executable, file_name] + list(args)
@@ -215,78 +246,147 @@ def run_python_file(args):
     return result.returncode
 
 if __name__ == '__main__':
-    # mp.set_start_method('spawn')
+    mp.set_start_method('spawn')
     patch_sklearn()
-    args = initialize_setting()
-    # C(args.config)
-    dataset_names = ['lym','breakhis40X','breakhis100X','breakhis200X','breakhis400X']
-    for d in dataset_names:
-        # args.dataset = 'breakhis8400X'
-        all_config_files = list(Path('./networks/confs').glob(f'{args.dataset}*'))
+    parser = argparse.ArgumentParser(description='Medical Image Classification with UncertaintyMixup')
+    parser.add_argument('--data_dir', type=str, default='/workspace/MedicalImageClassficationData/', 
+                        help='数据集目录路径')
+    parser.add_argument('--model', type=str, default='resnet18', help='模型选择')
+    parser.add_argument('--batch_size', type=int, default=32, help='批次大小')
+    parser.add_argument('--num_epochs', type=int, default=180, help='训练轮数')
+    parser.add_argument('--lr', type=float, default=0.001, help='学习率')
+    parser.add_argument('--dropout_rate', type=float, default=0.5, help='Dropout率')
+    parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='优化器类型')
+    parser.add_argument('--momentum', type=float, default=0.9, help='SGD优化器的动量')
+    parser.add_argument('--weight_decay', type=float, default=1e-4, help='权重衰减系数')
+    parser.add_argument('--strategy', type=str, default='', 
+                        help='训练策略')
+    parser.add_argument('--dataset', type=str, default='chestct', choices=['chestct', 'breakhis', 'padufes'],
+                        help='数据集类型')
+    parser.add_argument('--magnification', type=str, default=None, choices=['40', '100', '200', '400', None],
+                        help='BreakHis数据集的放大倍数，None表示使用所有倍数')
+    parser.add_argument('--test_split', type=float, default=0.2, help='BreakHis数据集的测试集比例')
+    parser.add_argument('--num_trials', type=int, default=10, help='独立实验次数')
+    parser.add_argument('--device', type=int, default=0, help='GPU设备号')
+    parser.add_argument('--save_mixed_results', action='store_true', help='是否保存混合结果可视化图像')
+    parser.add_argument('--gpu', action='store_true', help='是否在显存上进行计算')
+    parser.add_argument('--pretrain', action='store_true', help='是否使用预训练权重')
+    parser.add_argument('--test_all', action='store_true', help='是否测试所有方法')
+    parser.add_argument('--resize', action='store_true', help='搜索增广策略时是否缩放')
+    parser.add_argument('--mfc', action='store_true', help='是否优化增广策略') 
+    parser.add_argument('--online', action='store_true', help='是否在线优化增广策略') 
+    parser.add_argument('--proxy', action='store_true', help='是否使用代理') 
+    parser.add_argument('--GD', action='store_true', help='是否使用生成式模型') 
+    parser.add_argument('--num_ops', type=int, default=3, help='增广策略中的操作数') 
+    parser.add_argument('--use_prob', action='store_true', help='增广策略中是否需要激活概率') 
+    parser.add_argument('--multitask', action='store_true', help='是否启用多任务算法') 
+    parser.add_argument('--generative', action='store_true', help='是否在多任务算法中启用生成式模型') 
+    parser.add_argument('--group', action='store_true', help='每个数据子集是否单独适配增广策略') 
+    parser.add_argument('--lambda', type=int, default=1, help='目标函数权重')
+    parser.add_argument('--mag_bin', type=int, default=31, help='变换操作强度离散个数')
+    parser.add_argument('--prob_bin', type=int, default=10, help='变换概率离散个数')
+    args = parser.parse_args()
 
-        all_config = []
-        all_args = []
-        for f in all_config_files:
-            with open(str(f),'r') as file:
-                cfg = yaml.load(file,Loader=yaml.FullLoader)
-            if args.dataset != '':
-                if args.dataset not in cfg['dataset']:
-                    continue
-            if args.MFC:
-                if 'rand' in cfg['aug'] or 'trivial' in cfg['aug']:
-                    continue    
-            new_args = deepcopy(args)
-            new_args.config = str(f)
-            all_args.append(new_args)
-            all_config.append(cfg)
-            # train_val(0%num_gpus,0,args, all_config[0],1,'../data','./params_save')
+    # 创建results目录
+    os.makedirs('result', exist_ok=True)
+    
+    # 存储所有试验的结果
+    all_trials_results = []
+
+    for itrs in range(0, args.num_trials):        
+        print(f"\n{'='*50}")
+        print(f"开始第 {itrs + 1}/{args.num_trials} 次独立实验")
+        print(f"{'='*50}")
+
+        num_classes = num_class(args.dataset)
+        model = model = models.__dict__[args.model](num_classes=num_classes)
+        model = model.to(f'cuda:{args.device}')
+
+        if args.optimizer == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            print(f"Using SGD optimizer with learning rate {args.lr} and momentum {args.momentum}")
+        else:
+            optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+            print(f"Using Adam optimizer with learning rate {args.lr}")
+
+        save_path = Path('./params_save')
+        log_path = Path('./logs')
+        if args.dataset == 'breakhis':
+            save_name = f"{args.dataset}_{args.magnification}X"
+        else:
+            save_name = f"{args.dataset}"
+        if args.mfc:
+            save_name = save_name + '_mfc'
+        else:
+            save_name = save_name + args.strategy
+        print(save_name+f'_itrs{itrs+1}')
+        if args.mfc:
+            save_path = save_path.joinpath('mfc')
+            log_path = log_path.joinpath('mfc')
+            args.log_path = log_path
+            args.save_path = save_path
+        if args.online:
+            save_name += '_online'
+        if args.proxy:
+            save_name += '_proxy'
+            args.proxy_log_path = log_path.joinpath('proxy')
+            args.proxy_save_path = save_path.joinpath('proxy')
+        if args.GD:
+            save_name += '_GD'
+            args.GD_log_path = log_path.joinpath('GD')
+            args.GD_save_path = save_path.joinpath('GD')
+        args.save_name = save_name
+
+        model, best_metrics = train_val(model, optimizer, num_classes, args, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name, model)
+        # 保存本次实验的最佳结果
+        if best_metrics is not None:
+            all_trials_results.append(best_metrics)
+        # break   
+    
+    # 所有轮次结束后计算统计信息
+    if all_trials_results:
+        print(f"\n{'='*50}")
+        print("所有实验结束，统计结果如下:")
+        print(f"{'='*50}")
         
-        for itrs in range(10):        
-            for args, cfg in zip(all_args, all_config):
-                save_path = Path('./params_save')
-                log_path = Path('./logs')
-                save_name = Path(args.config).stem
-                # if 'lym' in save_name and 'rand' in save_name:
-                # if 'rand' in save_name or 'trivial' in save_name:
-                # if os.path.exists(save_path+'.pth'):
-                #     continue
-                print(save_name+f'_itrs{itrs+1}')
-                if args.MFC:
-                    save_path.joinpath('mfc')
-                    log_path.joinpath('mfc')
-                    args.log_path = log_path
-                    args.save_path = save_path
-                print('Pretrain start')
-                if os.path.exists(f'{save_name}_pretrained.pth'):
-                    model = torch.load(f'{save_name}_pretrained.pth')
-                else:
-                    pretrain_args = deepcopy(args)
-                    pretrain_args.MFC = False
-                    model = train_val(0, 0, pretrain_args, cfg, itrs, '../MedicalImageClassficationData')
-                    torch.save(model, f'{save_name}_pretrained.pth')
-                print('Pretrain end')
-                if args.resize:
-                    save_name += '_resize'
-                if args.proxy:
-                    save_name += '_proxy'
-                    args.proxy_log_path = log_path.joinpath('proxy')
-                    args.proxy_save_path = save_path.joinpath('proxy')
-                    with open('./proxy_config.yaml') as f:
-                        proxy_cfg = yaml.load(f,Loader=yaml.FullLoader)
-                    args.proxy_config = proxy_cfg
-                if args.GD:
-                    save_name += '_GD'
-                    args.GD_log_path = log_path.joinpath('GD')
-                    args.GD_save_path = save_path.joinpath('GD')
-                    with open('./GD_config.yaml') as f:
-                        GD_cfg = yaml.load(f,Loader=yaml.FullLoader)
-                    args.GD_config = GD_cfg
-                save_name += f'_itrs{itrs+1}'
-                args.save_name = save_name
-                # if os.path.exists(f'{save_path}/{save_name}.pth'):
-                #     continue
-                train_val(0, 0, args, cfg, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name)
-                # break   
-
-
-
+        # 获取所有的指标名称
+        metric_names = list(all_trials_results[0].keys())
+        
+        # 计算每个指标的统计信息
+        stats = {}
+        for metric in metric_names:
+            values = [result[metric] for result in all_trials_results]
+            stats[metric] = {
+                'mean': np.mean(values),
+                'std': np.std(values),
+                'max': np.max(values),
+                'min': np.min(values)
+            }
+            print(f"{metric}:")
+            print(f"  均值: {stats[metric]['mean']:.4f}")
+            print(f"  方差: {stats[metric]['std']:.4f}")
+            print(f"  最大值: {stats[metric]['max']:.4f}")
+            print(f"  最小值: {stats[metric]['min']:.4f}")
+        
+        # 保存统计结果到CSV文件
+        strategy_name = 'mfc' if args.mfc else args.strategy
+        if args.dataset == 'breakhis':
+            csv_filename = f"result/{args.dataset}_{args.magnification}X_{strategy_name}_{args.model}.csv"
+        else:
+            csv_filename = f"result/{args.dataset}_{strategy_name}_{args.model}.csv"
+        
+        with open(csv_filename, 'w', newline='') as csvfile:
+            fieldnames = ['metric', 'mean', 'std', 'max', 'min']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for metric in metric_names:
+                writer.writerow({
+                    'metric': metric,
+                    'mean': stats[metric]['mean'],
+                    'std': stats[metric]['std'],
+                    'max': stats[metric]['max'],
+                    'min': stats[metric]['min']
+                })
+        
+        print(f"\n统计结果已保存到 {csv_filename}")

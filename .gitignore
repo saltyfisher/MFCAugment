@@ -1,0 +1,27 @@
+# 忽略 params_save 目录
+params_save/
+
+# 忽略 vis 目录
+logs/
+
+# 忽略所有 .pth 文件
+*.pth
+
+# 忽略其他大型文件
+*.pt
+*.ckpt
+*.bin
+*.h5
+
+# 忽略日志文件
+*.log
+
+# 忽略虚拟环境
+venv/
+env/
+.venv/
+.env/
+
+# 忽略系统文件
+.DS_Store
+Thumbs.db

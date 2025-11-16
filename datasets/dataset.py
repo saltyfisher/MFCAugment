@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import torch
 import random
+import torchvision
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.utils.data import Dataset
@@ -13,25 +14,32 @@ class Mydata(Dataset):
         self.labels = labels
         self.transform = transform
         self.mfc = False
+        self.groups = []
     
     def __len__(self):
         return len(self.full_filenames)
     
     def __getitem__(self, idx):
-        image = Image.open(self.full_filenames[idx])
-        image = self.transform(image)
+        img_name = self.full_filenames[idx]
+        image = Image.open(img_name).convert('RGB')
+        # print(idx)
+        if idx in self.groups:
+            image = self.mfc_transform[0](image)
+        else:
+            image = self.transform[0](image)
         label = self.labels[idx]
         return image, label
 
     def get_all_files(self):
-        data_list = [Image.open(self.full_filenames[idx]) for idx in range(len(self.full_filenames))]
+        img_name = self.full_filenames[0]
+        data_list = [Image.open(self.full_filenames[idx]).convert('RGB') for idx in range(len(self.full_filenames))]
         label_list = [self.labels[idx] for idx in range(len(self.full_filenames))]
         return data_list, label_list
     
     def get_labels(self):
         return self.labels
     
-    def update_transform(self, transform, groups, mfc):
+    def update_transform(self, mfc_transform, transform, groups):
+        self.mfc_transform = mfc_transform
         self.transform = transform
-        self.mfc = mfc
         self.groups = groups

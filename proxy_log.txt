@@ -1,0 +1,15 @@
+Proxy0 Data Split0 Epoch1 Train Loss:10.72 Test Loss:9.68
+Proxy0 Data Split0 Epoch1 Train Loss:13.49 Test Loss:8.55
+Proxy0 Data Split0 Epoch2 Train Loss:20.56 Test Loss:11.73
+Proxy0 Data Split0 Epoch1 Train Loss:3.57 Test Loss:9.56
+Proxy0 Data Split0 Epoch2 Train Loss:7.27 Test Loss:11.56
+Proxy0 Data Split0 Epoch3 Train Loss:1.39 Test Loss:7.96
+Proxy0 Data Split0 Epoch4 Train Loss:1.72 Test Loss:7.79
+Proxy0 Data Split0 Epoch5 Train Loss:4.93 Test Loss:9.08
+Proxy0 Data Split0 Epoch6 Train Loss:7.32 Test Loss:10.39
+Proxy0 Data Split0 Epoch1 Train Loss:28.25 Test Loss:13.68
+Proxy0 Data Split0 Epoch2 Train Loss:17.59 Test Loss:8.47
+Proxy0 Data Split0 Epoch1 Train Loss:3.50 Test Loss:6.66
+Proxy0 Data Split0 Epoch2 Train Loss:2.27 Test Loss:6.42
+Proxy0 Data Split0 Epoch3 Train Loss:3.72 Test Loss:6.67
+Proxy0 Data Split0 Epoch4 Train Loss:3.15 Test Loss:6.55

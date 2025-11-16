@@ -1,0 +1,42 @@
+batch_size: 32
+epoch: 200
+GD_D_step: 5
+lambda_domain: 1
+lambda_recon: 10
+DCls_optimizer:
+  # type: adam
+  type: sgd
+  lr: 1.0e-4
+  decay: 1.0e-3
+  clip: 5
+P_optimizer:
+  # type: adam
+  type: sgd
+  lr: 1.0e-4
+  decay: 1.0e-3
+  clip: 5
+G_optimizer:
+  # type: adam
+  type: sgd
+  lr: 1.0e-3
+  decay: 1.0e-3
+  clip: 5
+D_optimizer:
+  # type: adam
+  type: sgd
+  lr: 1.0e-3
+  decay: 1.0e-3
+  clip: 5
+G_model:
+  # type: rbf
+  type: mlp
+  # type: conv
+  gamma: 0.1
+  f_num: 256
+D_model:
+  # type: rbf
+  type: mlp
+  # type: conv
+  gamma: 0.1
+  f_num: 256
+
