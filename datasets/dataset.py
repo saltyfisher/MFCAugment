@@ -21,12 +21,13 @@ class Mydata(Dataset):
     
     def __getitem__(self, idx):
         img_name = self.full_filenames[idx]
-        image = Image.open(img_name).convert('RGB')
+        with open(img_name, 'rb') as f:
+            image = Image.open(f).convert('RGB')
         # print(idx)
         if idx in self.groups:
             image = self.mfc_transform[0](image)
         else:
-            image = self.transform[0](image)
+            image = self.transform(image)
         label = self.labels[idx]
         return image, label
 

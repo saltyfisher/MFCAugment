@@ -1,3 +1,12 @@
+import cv2
+import numpy as np
+import torch
+import random
+import torchvision
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from torch.utils.data import Dataset, Subset
+from PIL import Image
 import logging
 import os
 import random
@@ -6,233 +15,147 @@ import torch
 import pandas as pd
 import numpy as np
 
-from torchvision import transforms
+from torchvision import transforms, datasets
 from operator import itemgetter
 from pathlib import Path
 from PIL import Image
 from torchvision.transforms import transforms
 from core.augmentations import MyRandAugment, MyTrivialAugmentWide
-from torchvision.transforms import RandAugment, TrivialAugmentWide
+from torchvision.transforms.autoaugment import RandAugment, TrivialAugmentWide
 from sklearn.model_selection import StratifiedShuffleSplit, train_test_split
-from datasets.dataset import Mydata
 
-# 修改函数签名，添加validation_folds参数，默认为1表示不使用交叉验证
-def get_data(strategy,dataset,magnification,dataroot,validation=False,validation_folds=1):
+class Mydata(torchvision.datasets.ImageFolder):
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if hasattr(self, 'groups'):
+            if index in self.groups:
+                sample = self.mfc_transform[0](sample)
+        else:
+            if self.transform is not None:
+                sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target
+
+    def get_all_files(self):
+        img_name = self.full_filenames[0]
+        data_list = [Image.open(self.full_filenames[idx]).convert('RGB') for idx in range(len(self.full_filenames))]
+        label_list = [self.labels[idx] for idx in range(len(self.full_filenames))]
+        return data_list, label_list
+    
+    def get_labels(self):
+        return self.labels
+    
+    def update_transform(self, mfc_transform, transform, groups):
+        self.mfc_transform = mfc_transform
+        self.transform = transform
+        self.groups = groups
+
+def get_data(strategy,dataset,magnification,dataroot,random_state=42,test_split=0.2,test_validation=False):
      
     if dataset == 'breakhis':
         resize_size = (448, 448)
     else:  # chestct
         resize_size = (224, 224)
-    if dataset == 'chestct':
-        transform_test = [transforms.Compose([
-            transforms.Resize(resize_size),
-            transforms.ToTensor()
-        ])]
-    else:
-        transform_test = [transforms.Compose([
-            transforms.ToTensor()
-        ])]
-    if strategy == 'trivialaugment':            
-        transform_train = [transforms.Compose([TrivialAugmentWide(),
-                                             transforms.Resize(resize_size),
-                                             transforms.ToTensor()])]
-    elif strategy == 'randaugment':
-        transform_train = [transforms.Compose([RandAugment(),
-                                             transforms.Resize(resize_size),
-                                             transforms.ToTensor()])]
-    elif strategy == 'trivialaugment_raw':
-        transform_train = [transforms.Compose([MyTrivialAugmentWide(),
-                                             transforms.Resize(resize_size),
-                                             transforms.ToTensor()])]
-    elif strategy == 'randaugment_raw':
-        transform_train = [transforms.Compose([MyRandAugment(),
-                                             transforms.Resize(resize_size),
-                                             transforms.ToTensor()])]
-    else:
-        transform_train = [transforms.Compose([
+
+    train_transform = transforms.Compose([
+        transforms.Resize(resize_size),
+        transforms.ToTensor(),
+    ])
+    
+    test_transform = transforms.Compose([
             transforms.Resize(resize_size),
             transforms.ToTensor(),
-            ])]
+        ])
     
-    label, data = [], []
-    if 'breakhis' in dataset:
-        all_folders = Path(dataroot).joinpath('BreakHis','histology_slides','breast')
-        label_type = ['adenosis','fibroadenoma','phyllodes_tumor','tubular_adenoma','ductal_carcinoma','lobular_carcinoma','mucinous_carcinoma','papillary_carcinoma']
-        for obj in all_folders.rglob('*.png'):  
-            if magnification in str(obj.parent):
-                data.append(str(obj))
-                for i, label_name in enumerate(label_type):
-                    if label_name in str(obj.parent):
-                        label.append(i)
+    if strategy == 'randaugment':
+        train_transform = transforms.Compose([
+            RandAugment(),
+            train_transform,
+        ])
 
-    if data != []:
-        sss = StratifiedShuffleSplit(n_splits=1,test_size=0.2)
-        traintest_idx, test_idx = next(sss.split(data, label))
-        getter = itemgetter(*test_idx)
-        test_dataset = Mydata(getter(data), getter(label), transform_test)
-        getter = itemgetter(*traintest_idx)
-        traintest_dataset = Mydata(getter(data), getter(label), transform_train)
+    if strategy == 'trivialaugment':
+        train_transform = transforms.Compose([
+            TrivialAugmentWide(),
+            train_transform,
+        ])
+
+    if strategy == 'randaugment_raw':
+        train_transform = transforms.Compose([
+            MyRandAugment(),
+            train_transform,
+        ])
+
+    if strategy == 'trivialaugment_raw':
+        train_transform = transforms.Compose([
+            MyTrivialAugmentWide(),
+            train_transform,
+        ])
+
+    if 'breakhis' in dataset:
+        root_dir = os.path.join(dataroot, 'BreakHis', magnification)
+        # 加载完整数据集
+        full_dataset = Mydata(root=root_dir, transform=train_transform)
         
-        # 如果需要验证集，则从训练集中分出一部分作为验证集
-        if validation:
-            train_data, train_label = getter(data), getter(label)
-            # 使用分层抽样将训练集分为训练集和验证集 (80%训练, 20%验证)
-            # 使用validation_folds参数控制交叉验证折数
-            sss_val = StratifiedShuffleSplit(n_splits=validation_folds, test_size=0.2)
+        # 获取标签
+        labels = [sample[1] for sample in full_dataset.samples]
+        
+        # 使用StratifiedShuffleSplit进行分层抽样
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=test_split, random_state=random_state)
+        train_indices, test_indices = next(sss.split(range(len(full_dataset)), labels))
+        
+        # 创建训练集和测试集的子集
+        train_dataset = Subset(full_dataset, train_indices)
+        test_dataset = Subset(full_dataset, test_indices)
+        
+        # 为测试集设置不同的transform
+        # 注意：Subset不直接支持transform，我们需要为子集中的每个样本手动应用测试transform
+        # 这里我们创建一个包装类来处理不同的transform
+        class TransformSubset(torch.utils.data.Dataset):
+            def __init__(self, subset, transform):
+                self.samples = subset
+                self.transform = transform
+                self.targets = [s[1] for s in subset]
+                
+            def __getitem__(self, index):
+                x, y = self.samples[index]
+                # 检查x是否已经是Tensor，如果是则不需要再应用transform
+                if self.transform and not isinstance(x, torch.Tensor):
+                    x = self.transform(x)
+                elif self.transform and isinstance(x, torch.Tensor):
+                    # 如果x已经是Tensor，我们需要先将其转换回PIL Image再应用transform
+                    from torchvision.transforms import ToPILImage
+                    to_pil = ToPILImage()
+                    x = to_pil(x)
+                    x = self.transform(x)
+                return x, y
             
-            # 如果是多折验证，返回训练集和验证集的列表
-            if validation_folds > 1:
-                train_datasets = []
-                val_datasets = []
-                for train_idx, val_idx in sss_val.split(train_data, train_label):
-                    # 创建训练集和验证集
-                    train_getter = itemgetter(*train_idx) if len(train_idx) > 1 else itemgetter(train_idx[0])
-                    val_getter = itemgetter(*val_idx) if len(val_idx) > 1 else itemgetter(val_idx[0])
-                    
-                    # 创建训练集
-                    train_dataset = Mydata(
-                        train_getter(train_data) if len(train_idx) > 1 else [train_data[train_idx[0]]], 
-                        train_getter(train_label) if len(train_idx) > 1 else [train_label[train_idx[0]]], 
-                        transform_train
-                    )
-                    
-                    # 创建验证集
-                    val_dataset = Mydata(
-                        val_getter(train_data) if len(val_idx) > 1 else [train_data[val_idx[0]]], 
-                        val_getter(train_label) if len(val_idx) > 1 else [train_label[val_idx[0]]], 
-                        transform_test  # 验证集使用测试变换
-                    )
-                    
-                    train_datasets.append(train_dataset)
-                    val_datasets.append(val_dataset)
-                
-                # 返回训练集列表、验证集列表、完整训练集和测试集
-                return train_datasets, val_datasets, traintest_dataset, test_dataset, resize_size, transform_train
-            else:
-                # 单折验证，保持原有逻辑
-                train_idx, val_idx = next(sss_val.split(train_data, train_label))
-                
-                # 创建训练集和验证集
-                train_getter = itemgetter(*train_idx) if len(train_idx) > 1 else itemgetter(train_idx[0])
-                val_getter = itemgetter(*val_idx) if len(val_idx) > 1 else itemgetter(val_idx[0])
-                
-                # 更新训练集为分割后的训练部分
-                split_train_dataset = Mydata(
-                    train_getter(data) if len(train_idx) > 1 else [train_data[train_idx[0]]], 
-                    train_getter(label) if len(train_idx) > 1 else [train_label[train_idx[0]]], 
-                    transform_train
-                )
-                
-                # 创建验证集
-                val_dataset = Mydata(
-                    val_getter(data) if len(val_idx) > 1 else [train_data[val_idx[0]]], 
-                    val_getter(label) if len(val_idx) > 1 else [train_label[val_idx[0]]], 
-                    transform_test  # 验证集使用测试变换
-                )
-                
-                # 返回训练集、验证集、完整训练集和测试集
-                return split_train_dataset, val_dataset, traintest_dataset, test_dataset, resize_size, transform_train
+            def __len__(self):
+                return len(self.samples)
+        
+        # 应用不同的transform
+        traintest_dataset = TransformSubset(train_dataset, train_transform)
+        test_dataset = TransformSubset(test_dataset, test_transform)
 
     if 'chestct' in dataset:
         data, label = [], []
         all_folders = Path(dataroot).joinpath('chest-ctscan-images_datasets','train')
-        label_type = ['adenocarcinoma','large','normal','squamous']
-        for obj in all_folders.rglob('*.png'):  
-            data.append(str(obj))
-            for i, label_name in enumerate(label_type):
-                if label_name in str(obj.parent):
-                    label.append(i)
-                    
-        # 创建完整训练集
-        traintest_dataset = Mydata(data, label, transform_train)
-        
-        # 如果需要验证集，则从训练集中分出一部分作为验证集
-        if validation:
-            # 使用分层抽样将训练集分为训练集和验证集 (80%训练, 20%验证)
-            # 使用validation_folds参数控制交叉验证折数
-            sss = StratifiedShuffleSplit(n_splits=validation_folds, test_size=0.2)
-            
-            # 如果是多折验证，返回训练集和验证集的列表
-            if validation_folds > 1:
-                train_datasets = []
-                val_datasets = []
-                for train_idx, val_idx in sss.split(data, label):
-                    # 创建训练集和验证集
-                    train_getter = itemgetter(*train_idx) if len(train_idx) > 1 else itemgetter(train_idx[0])
-                    val_getter = itemgetter(*val_idx) if len(val_idx) > 1 else itemgetter(val_idx[0])
-                    
-                    # 创建训练集
-                    train_dataset = Mydata(
-                        train_getter(data) if len(train_idx) > 1 else [data[train_idx[0]]], 
-                        train_getter(label) if len(train_idx) > 1 else [label[train_idx[0]]], 
-                        transform_train
-                    )
-                    
-                    # 创建验证集
-                    val_dataset = Mydata(
-                        val_getter(data) if len(val_idx) > 1 else [data[val_idx[0]]], 
-                        val_getter(label) if len(val_idx) > 1 else [label[val_idx[0]]], 
-                        transform_test  # 验证集使用测试变换
-                    )
-                    
-                    train_datasets.append(train_dataset)
-                    val_datasets.append(val_dataset)
-                
-                # 处理测试集
-                data_test, label_test = [], []
-                all_folders = Path(dataroot).joinpath('chest-ctscan-images_datasets','test')
-                for obj in all_folders.rglob('*.png'):  
-                    data_test.append(str(obj))
-                    for i, label_name in enumerate(label_type):
-                        if label_name in str(obj.parent):
-                            label_test.append(i)
-                test_dataset = Mydata(data_test, label_test, transform_test)
-                
-                # 返回训练集列表、验证集列表、完整训练集和测试集
-                return train_datasets, val_datasets, traintest_dataset, test_dataset, resize_size, transform_train
-            else:
-                # 单折验证，保持原有逻辑
-                train_idx, val_idx = next(sss.split(data, label))
-                
-                # 创建训练集和验证集
-                train_getter = itemgetter(*train_idx) if len(train_idx) > 1 else itemgetter(train_idx[0])
-                val_getter = itemgetter(*val_idx) if len(val_idx) > 1 else itemgetter(val_idx[0])
-                
-                # 创建训练集
-                train_dataset = Mydata(
-                    train_getter(data) if len(train_idx) > 1 else [data[train_idx[0]]], 
-                    train_getter(label) if len(train_idx) > 1 else [label[train_idx[0]]], 
-                    transform_train
-                )
-                
-                # 创建验证集
-                val_dataset = Mydata(
-                    val_getter(data) if len(val_idx) > 1 else [data[val_idx[0]]], 
-                    val_getter(label) if len(val_idx) > 1 else [label[val_idx[0]]], 
-                    transform_test  # 验证集使用测试变换
-                )
-                
-                # 处理测试集
-                data_test, label_test = [], []
-                all_folders = Path(dataroot).joinpath('chest-ctscan-images_datasets','test')
-                for obj in all_folders.rglob('*.png'):  
-                    data_test.append(str(obj))
-                    for i, label_name in enumerate(label_type):
-                        if label_name in str(obj.parent):
-                            label_test.append(i)
-                test_dataset = Mydata(data_test, label_test, transform_test)
-                
-                # 返回训练集、验证集、完整训练集和测试集
-                return train_dataset, val_dataset, traintest_dataset, test_dataset, resize_size, transform_train
-        else:
-            data_test, label_test = [], []
-            all_folders = Path(dataroot).joinpath('chest-ctscan-images_datasets','test')
-            for obj in all_folders.rglob('*.png'):  
-                data_test.append(str(obj))
-                for i, label_name in enumerate(label_type):
-                    if label_name in str(obj.parent):
-                        label_test.append(i)
-            test_dataset = Mydata(data_test, label_test, transform_test)
-
+        traintest_dataset = Mydata(str(all_folders), transform=train_transform)
+        all_folders = Path(dataroot).joinpath('chest-ctscan-images_datasets','test')
+        test_dataset = Mydata(str(all_folders), transform=test_transform)
     
-    return traintest_dataset,test_dataset,resize_size,transform_train
+
+    return traintest_dataset,test_dataset,resize_size,train_transform
+
+
+
+
+
+
+
+
+
+
+

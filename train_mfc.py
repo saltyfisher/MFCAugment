@@ -31,7 +31,8 @@ from networks import get_model, num_class
 from utils import initialize_setting
 from theconf import Config as C
 from lr_scheduler import adjust_learning_rate_resnet
-from metrics import Accumulator, f1_score,precision_score,recall_score,accuracy_score,auc_score
+from metrics import Accumulator
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from warmup_scheduler import GradualWarmupScheduler
 from common import get_logger
 from core.MFCAugment import MFCAugment
@@ -42,23 +43,24 @@ import statistics
 logger = get_logger('MFC')
 logger.setLevel(logging.DEBUG)
 
-def run_epoch(args, num_classes, model, loader, loss_fn, optimizer):
+def to_one_hot(inp, num_classes, device='cuda'):
+    '''one-hot label'''
+    y_onehot = torch.zeros((inp.size(0), num_classes), dtype=torch.float32, device=device)
+    y_onehot.scatter_(1, inp.unsqueeze(1), 1)
+    return y_onehot
+
+def run_epoch(model, loader, loss_fn, optimizer):
     cnt = 0
-    eval_cnt = 0
-    total_steps = len(loader)
     steps = 0
     device = next(model.parameters()).device
-    metrics = Accumulator()
-    gc.collect()
-    torch.cuda.empty_cache()
-
+    train_loss = 0.0
     all_labels = []
     all_preds = []
     for batch in loader:
         data, label = batch[:2]
         steps += 1
-
-        data, label = data.to(device), label.to(device)
+        data = data.to(device) 
+        label = label.to(device)
         if optimizer:
             optimizer.zero_grad()
 
@@ -66,74 +68,34 @@ def run_epoch(args, num_classes, model, loader, loss_fn, optimizer):
         loss = loss_fn(preds, label)
         if optimizer:
             loss.backward()
-
-        all_labels.extend(label)
-        all_preds.extend(preds.detach())
-        # if config['optimizer'].get('clip', 5) > 0:
-        #     nn.utils.clip_grad_norm_(model.parameters(), config['optimizer'].get('clip', 5))
-        # if (steps-1) % config.get('step_optimizer_every', 1) == config.get('step_optimizer_nth_step', 0): # default is to step on the first step of each pack
         if optimizer:
             optimizer.step()
+
+        _, preds = preds.max(1)
+        all_labels.extend(label.cpu().numpy())
+        all_preds.extend(preds.detach().cpu().numpy())
         cnt += len(data)
 
-        # if scheduler is not None:
-        #     scheduler.step(epoch - 1 + float(steps) / total_steps)
-        metrics.add_dict({'loss': loss.item()})
-        #before_load_time = time()
-        # del preds, loss, data, label
-        if optimizer:
-            metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
-    precision = precision_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
-    recall = recall_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
-    f1 = f1_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
-    accuracy = accuracy_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
-    auc = auc_score(num_classes, torch.stack(all_preds), torch.stack(all_labels))
-    metrics.add_dict({
-        'accuracy': accuracy.item(),
-        'precision': precision.item(),
-        'recall': recall.item(),
-        'f1':f1.item(),
-        'auc':auc.item()
-    })
-    metrics.metrics['loss'] = metrics.metrics['loss']/cnt
-    # if writer is not None:
-    #     for key, value in metrics.items():
-    #         writer.add_scalar(key, value, epoch)
+        train_loss += loss.item() * data.size(0)
+    train_loss = train_loss / cnt
+    accuracy = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
+    recall = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
+    f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+
+    metrics = {}
+    metrics['loss'] = train_loss
+    metrics['accuracy'] = accuracy
+    metrics['recall'] = recall
+    metrics['precision'] = precision
+    metrics['f1'] = f1
+
     return metrics
 
 def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None):
     
     criterion = nn.CrossEntropyLoss()
-    # if config['optimizer']['type'] == 'sgd':
-    #     optimizer = optim.SGD(
-    #         model.parameters(),
-    #         lr=config['lr'],
-    #         momentum=config['optimizer'].get('momentum', 0.9),
-    #         weight_decay=config['optimizer']['decay'],
-    #         nesterov=config['optimizer']['nesterov']
-    #     )
-    # elif config['optimizer']['type'] == 'adam':
-    # optimizer = optim.Adam(
-    #     model.parameters(),
-    #     lr=config['lr'],
-    #     betas=(config['optimizer'].get('momentum',.9),.999)
-    # )
-
-    # lr_scheduler_type = config['lr_schedule'].get('type', 'cosine')
-    # if lr_scheduler_type == 'cosine':
-    #     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0.)
-    # elif lr_scheduler_type == 'resnet':
-    #     scheduler = adjust_learning_rate_resnet(config,optimizer)
-    # elif lr_scheduler_type == 'constant':
-    #     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda e: 1.)
-
-    # if config['lr_schedule'].get('warmup', None):
-    #     scheduler = GradualWarmupScheduler(
-    #         optimizer,
-    #         multiplier=config['lr_schedule']['warmup']['multiplier'],
-    #         total_epoch=config['lr_schedule']['warmup']['epoch'],
-    #         after_scheduler=scheduler
-    #     )
+    
     max_epoch = args.num_epochs
     epoch_start = 1
     rs = {'train':[],'test':[]}
@@ -141,27 +103,19 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
     best_metrics = None
 
     traintest_dataset,test_dataset,resize_size,transform_train = get_data(args.strategy,args.dataset,args.magnification,dataroot)
-    # if args.mfc:
-        # if 'breakhis' in args.save_name:
-        #     transform_raw = [transforms.Compose([TrivialAugmentWide(),
-        #                     transforms.Resize(resize_size, interpolation=Image.BICUBIC),
-        #                     transforms.ToTensor()])]
-        # else:
-        #     transform_raw = [transforms.Compose([RandAugment(),
-        #                         transforms.Resize(resize_size, interpolation=Image.BICUBIC),
-        #                         transforms.ToTensor()])]
-        # transform_raw = [transforms.Compose([transforms.Resize(resize_size, interpolation=Image.BICUBIC),
-        #                         transforms.ToTensor()])]
-        # traintest_dataset.update_transform([], transform_raw, [])
-    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+
+    traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-    data_list, label_list = traintest_dataset.get_all_files()
+    data_list = [s[0] for s in traintest_dataset.samples] 
+    label_list = traintest_dataset.targets
 
     policy = []
     policy_subset = []
     for epoch in range(epoch_start, max_epoch+1):
-        model.train()     
-        metrics = run_epoch(args,num_classes,model, traintestloader, criterion, optimizer)
+        model.train()    
+        st = time.time() 
+        metrics = run_epoch(model, traintestloader, criterion, optimizer)
+        # print('time elapsed: %.2f' % (time.time()-st))
         rs['train'].append(metrics)
         loss = metrics['loss']
         accuracy = metrics['accuracy']
@@ -172,7 +126,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
         
         if (save_path is not None) and (epoch % 20 == 0 or epoch == max_epoch):
             with torch.no_grad():
-                metrics = run_epoch(args,num_classes,model, testloader
+                metrics = run_epoch(model, testloader
                 , criterion, None)
                 rs['test'].append(metrics)
                 print(f'Epoch [{epoch+1}/{max_epoch+1}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
@@ -185,8 +139,8 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 torch.save({
                 'epoch': epoch,
                 'log': {
-                    'train': [rs['train'][i].get_dict() for i in range(len(rs['train']))],
-                    'test': [rs['test'][i].get_dict() for i in range(len(rs['test']))],
+                    'train': [rs['train'][i] for i in range(len(rs['train']))],
+                    'test': [rs['test'][i] for i in range(len(rs['test']))],
                 },
                 # 'optimizer': optimizer.state_dict(),
                 # 'model': model.state_dict(),
@@ -224,7 +178,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 groups = np.unique(np.concatenate(groups))
             policy.append(policy_subset)
             traintest_dataset.update_transform(optimal_policy, transform_train, groups)
-            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
             testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     # 输出本次训练的最优结果
@@ -246,8 +200,8 @@ def run_python_file(args):
     return result.returncode
 
 if __name__ == '__main__':
-    mp.set_start_method('spawn')
-    patch_sklearn()
+    # mp.set_start_method('spawn')
+    # patch_sklearn()
     parser = argparse.ArgumentParser(description='Medical Image Classification with UncertaintyMixup')
     parser.add_argument('--data_dir', type=str, default='/workspace/MedicalImageClassficationData/', 
                         help='数据集目录路径')
@@ -299,8 +253,8 @@ if __name__ == '__main__':
         print(f"{'='*50}")
 
         num_classes = num_class(args.dataset)
-        model = model = models.__dict__[args.model](num_classes=num_classes)
-        model = model.to(f'cuda:{args.device}')
+        model = models.__dict__[args.model](num_classes=num_classes)
+        model.to(f'cuda:{args.device}')
 
         if args.optimizer == 'sgd':
             optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
@@ -318,7 +272,8 @@ if __name__ == '__main__':
         if args.mfc:
             save_name = save_name + '_mfc'
         else:
-            save_name = save_name + args.strategy
+            if args.strategy != '':
+                save_name = save_name + f'_{args.strategy}'
         print(save_name+f'_itrs{itrs+1}')
         if args.mfc:
             save_path = save_path.joinpath('mfc')
@@ -357,16 +312,16 @@ if __name__ == '__main__':
         for metric in metric_names:
             values = [result[metric] for result in all_trials_results]
             stats[metric] = {
-                'mean': np.mean(values),
-                'std': np.std(values),
-                'max': np.max(values),
-                'min': np.min(values)
+                'mean': f'{np.mean(values):.4f}',
+                'std': f'{np.std(values):.4f}',
+                'max': f'{np.max(values):.4f}',
+                'min': f'{np.min(values):.4f}'
             }
             print(f"{metric}:")
-            print(f"  均值: {stats[metric]['mean']:.4f}")
-            print(f"  方差: {stats[metric]['std']:.4f}")
-            print(f"  最大值: {stats[metric]['max']:.4f}")
-            print(f"  最小值: {stats[metric]['min']:.4f}")
+            print(f"  均值: {stats[metric]['mean']}")
+            print(f"  方差: {stats[metric]['std']}")
+            print(f"  最大值: {stats[metric]['max']}")
+            print(f"  最小值: {stats[metric]['min']}")
         
         # 保存统计结果到CSV文件
         strategy_name = 'mfc' if args.mfc else args.strategy
