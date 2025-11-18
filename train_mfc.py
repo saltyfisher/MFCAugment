@@ -106,8 +106,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
 
     traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-    data_list = [s[0] for s in traintest_dataset.samples] 
-    label_list = traintest_dataset.targets
+    data_list, label_list = traintest_dataset.get_all_files()
 
     policy = []
     policy_subset = []
@@ -148,7 +147,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             }, str(save_path.joinpath(save_name+'.pth')))   
         if args.online:
             trigger = (epoch % 40 == 0)
-            # trigger = (epoch == epoch_start)
+            trigger = (epoch == epoch_start)
         else:
             trigger = (epoch == epoch_start)
         if args.mfc and trigger:
@@ -292,6 +291,7 @@ if __name__ == '__main__':
             args.GD_save_path = save_path.joinpath('GD')
         args.save_name = save_name
 
+        os.makedirs(save_path, exist_ok=True)
         model, best_metrics = train_val(model, optimizer, num_classes, args, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name, model)
         # 保存本次实验的最佳结果
         if best_metrics is not None:

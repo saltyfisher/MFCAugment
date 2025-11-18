@@ -40,9 +40,8 @@ class Mydata(torchvision.datasets.ImageFolder):
         return sample, target
 
     def get_all_files(self):
-        img_name = self.full_filenames[0]
-        data_list = [Image.open(self.full_filenames[idx]).convert('RGB') for idx in range(len(self.full_filenames))]
-        label_list = [self.labels[idx] for idx in range(len(self.full_filenames))]
+        data_list = [self.loader(path) for path, target in self.samples]
+        label_list = self.targets
         return data_list, label_list
     
     def get_labels(self):
@@ -101,43 +100,18 @@ def get_data(strategy,dataset,magnification,dataroot,random_state=42,test_split=
         
         # 获取标签
         labels = [sample[1] for sample in full_dataset.samples]
-        
+
         # 使用StratifiedShuffleSplit进行分层抽样
         sss = StratifiedShuffleSplit(n_splits=1, test_size=test_split, random_state=random_state)
         train_indices, test_indices = next(sss.split(range(len(full_dataset)), labels))
-        
+
         # 创建训练集和测试集的子集
-        train_dataset = Subset(full_dataset, train_indices)
-        test_dataset = Subset(full_dataset, test_indices)
+        traintest_dataset = Subset(full_dataset, train_indices).dataset
+        test_dataset = Subset(full_dataset, test_indices).dataset
+
+        traintest_dataset.transform = train_transform
+        test_dataset.transform = test_transform
         
-        # 为测试集设置不同的transform
-        # 注意：Subset不直接支持transform，我们需要为子集中的每个样本手动应用测试transform
-        # 这里我们创建一个包装类来处理不同的transform
-        class TransformSubset(torch.utils.data.Dataset):
-            def __init__(self, subset, transform):
-                self.samples = subset
-                self.transform = transform
-                self.targets = [s[1] for s in subset]
-                
-            def __getitem__(self, index):
-                x, y = self.samples[index]
-                # 检查x是否已经是Tensor，如果是则不需要再应用transform
-                if self.transform and not isinstance(x, torch.Tensor):
-                    x = self.transform(x)
-                elif self.transform and isinstance(x, torch.Tensor):
-                    # 如果x已经是Tensor，我们需要先将其转换回PIL Image再应用transform
-                    from torchvision.transforms import ToPILImage
-                    to_pil = ToPILImage()
-                    x = to_pil(x)
-                    x = self.transform(x)
-                return x, y
-            
-            def __len__(self):
-                return len(self.samples)
-        
-        # 应用不同的transform
-        traintest_dataset = TransformSubset(train_dataset, train_transform)
-        test_dataset = TransformSubset(test_dataset, test_transform)
 
     if 'chestct' in dataset:
         data, label = [], []
