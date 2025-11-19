@@ -15,7 +15,7 @@ import datetime
 import matplotlib.pyplot as plt
 # import geatpy as ea
 import kornia.augmentation as K
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from tensorboardX import SummaryWriter
 from torch_pca import PCA as PCA_torch
 from tqdm import tqdm
@@ -49,7 +49,7 @@ from core.trainer_proxy import train_proxy, test_proxy
 # from core.dataCluster import constrained_kmeans_ilp
 
 def getdatafeat(args, resize_size, data_list, model):
-    model = torch.nn.DataParallel(model)
+    # model = torch.nn.DataParallel(model)
     st = time.time()
     if args.resize:
         transformer = transforms.Compose([transforms.Resize(resize_size), ToTensor()])
@@ -96,10 +96,33 @@ class SingleTask(object):
         params.update({'Lb':self.Lb,'Ub':self.Ub})
         return self.evalfnc(x, params)
 
-def apply_aug(args):
-    d, policy, num_ops = args
-    aug = MyAugment(policy, num_ops)
-    return aug(d) 
+def process_policy(args_tuple):
+    """
+    处理单个增强策略的函数
+    """
+    p, data, args, num_ops, resize_size, model, pca, feat_list, groups, group_id = args_tuple
+    
+    aug = MyAugment(p, num_ops)
+    aug_data = [aug(d) for d in data]
+    aug_feat, _ = getdatafeat(args, resize_size, aug_data, model)
+    
+    if args.gpu:
+        aug_feat = torch.cat(aug_feat).detach()
+    else:
+        aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
+    
+    policy_feat = pca.transform(aug_feat)
+    
+    if args.gpu:
+        loss1 = kl_divergence_kde(feat_list, policy_feat)
+        loss2 = kl_divergence_kde(feat_list[groups[group_id]], policy_feat)
+    else:
+        loss1 = KL_loss(feat_list, policy_feat)
+        loss2 = KL_loss(feat_list[groups[group_id]], policy_feat)
+        
+    l = 1
+    loss = loss1 - l * loss2
+    return loss 
 
 def evalFuncBatch(policies, params):
     """
@@ -124,96 +147,122 @@ def evalFuncBatch(policies, params):
     # 为每个策略生成增强数据
     data = [data_list[i] for i in groups[group_id]]
     all_losses = []
-    for i in range(0, len(formatted_policies), batch_size):
-        batch_policies = formatted_policies[i:i+batch_size]
-        aug_data_list = []
-        st = time.time()
-        for policy in batch_policies:
-            aug = MyAugment(policy, num_ops=params['n_op'])
-            aug_data = []
-            # with joblib.Parallel(n_jobs=2, backend='threading') as parallel:
-            #     aug_data_list = parallel(
-            #         joblib.delayed(aug)(d) 
-            #         for d in data
-            #     )
-            # with ProcessPoolExecutor(max_workers=8) as ex:
-            #     aug_data = list(ex.map(apply_aug, [(d, policy, params['n_op']) for d in data]))
-            for d in data:
-                aug_data.append(aug(d))
-            aug_data_list.append(aug_data)
-        # print('aug time:', time.time()-st)
 
-        # n_jobs = min(4, len(aug_data_list))
-        # if args.dataset == 'chestct':
-        #     n_jobs = min(4, len(aug_data_list))
-        # if args.dataset == 'breakhis':
-        #     n_jobs = min(2, len(aug_data_list))
-        # with joblib.Parallel(n_jobs=n_jobs, backend='threading') as parallel:
-        #     aug_feats_results = parallel(
-        #         joblib.delayed(getdatafeat)(args, resize_size, aug_data, model) 
-        #         for aug_data in aug_data_list
-        #     )
-        # aug_feats = []
-        # for feat_result, _ in aug_feats_results:
-        #     if args.gpu:
-        #         feat = torch.cat(feat_result).detach()
-        #     else:
-        #         feat = torch.cat(feat_result).detach().cpu().numpy()
-        #     # 使用PCA转换特征
-        #     feat = pca.transform(feat)
-        #     aug_feats.append(feat)
-        # # 计算每个策略的损失
-        # for policy_feat in aug_feats:
-        #     if args.gpu:
-        #         loss1 = kl_divergence_kde(feat_list, policy_feat)
-        #         loss2 = kl_divergence_kde(feat_list[groups[group_id]], policy_feat)
-        #     else:
-        #         loss1 = KL_loss(feat_list, policy_feat)
-        #         loss2 = KL_loss(feat_list[groups[group_id]], policy_feat)
+    process_args = [
+        (p, data, args, params['n_op'], resize_size, model, pca, feat_list, groups, group_id)
+        for p in formatted_policies
+    ]
+    
+    # 使用ThreadPoolExecutor进行并行处理
+    st = time.time()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        # 提交所有任务
+        future_to_policy = {
+            executor.submit(process_policy, args_tuple): i 
+            for i, args_tuple in enumerate(process_args)
+        }
+        
+        # 收集结果
+        results = {}
+        for future in as_completed(future_to_policy):
+            index = future_to_policy[future]
+            result = future.result()
+            results[index] = result
+        
+        # 按顺序排列结果
+        all_losses = [results[i] for i in sorted(results.keys())]
+    # print('evalFuncBatch time:', time.time()-st)
+    
+    # for i in range(0, len(formatted_policies), batch_size):
+    #     batch_policies = formatted_policies[i:i+batch_size]
+    #     aug_data_list = []
+    #     st = time.time()
+    #     for policy in batch_policies:
+    #         aug = MyAugment(policy, num_ops=params['n_op'])
+    #         aug_data = []
+    #         # with joblib.Parallel(n_jobs=2, backend='threading') as parallel:
+    #         #     aug_data_list = parallel(
+    #         #         joblib.delayed(aug)(d) 
+    #         #         for d in data
+    #         #     )
+    #         # with ProcessPoolExecutor(max_workers=8) as ex:
+    #         #     aug_data = list(ex.map(apply_aug, [(d, policy, params['n_op']) for d in data]))
+    #         for d in data:
+    #             aug_data.append(aug(d))
+    #         aug_data_list.append(aug_data)
+    #     # print('aug time:', time.time()-st)
+
+    #     # n_jobs = min(4, len(aug_data_list))
+    #     # if args.dataset == 'chestct':
+    #     #     n_jobs = min(4, len(aug_data_list))
+    #     # if args.dataset == 'breakhis':
+    #     #     n_jobs = min(2, len(aug_data_list))
+    #     # with joblib.Parallel(n_jobs=n_jobs, backend='threading') as parallel:
+    #     #     aug_feats_results = parallel(
+    #     #         joblib.delayed(getdatafeat)(args, resize_size, aug_data, model) 
+    #     #         for aug_data in aug_data_list
+    #     #     )
+    #     # aug_feats = []
+    #     # for feat_result, _ in aug_feats_results:
+    #     #     if args.gpu:
+    #     #         feat = torch.cat(feat_result).detach()
+    #     #     else:
+    #     #         feat = torch.cat(feat_result).detach().cpu().numpy()
+    #     #     # 使用PCA转换特征
+    #     #     feat = pca.transform(feat)
+    #     #     aug_feats.append(feat)
+    #     # # 计算每个策略的损失
+    #     # for policy_feat in aug_feats:
+    #     #     if args.gpu:
+    #     #         loss1 = kl_divergence_kde(feat_list, policy_feat)
+    #     #         loss2 = kl_divergence_kde(feat_list[groups[group_id]], policy_feat)
+    #     #     else:
+    #     #         loss1 = KL_loss(feat_list, policy_feat)
+    #     #         loss2 = KL_loss(feat_list[groups[group_id]], policy_feat)
             
-        #     l = 1
-        #     loss = loss1 - l * loss2
-        #     losses.append(loss)
-        # 合并所有增强数据以便批量处理
-        # del aug_data_list, aug_feats_results, aug_feats
-        all_aug_data = []
-        policy_indices = []  # 记录每个策略的数据在合并列表中的起始和结束位置
+    #     #     l = 1
+    #     #     loss = loss1 - l * loss2
+    #     #     losses.append(loss)
+    #     # 合并所有增强数据以便批量处理
+    #     # del aug_data_list, aug_feats_results, aug_feats
+    #     all_aug_data = []
+    #     policy_indices = []  # 记录每个策略的数据在合并列表中的起始和结束位置
         
-        start_idx = 0
-        for aug_data in aug_data_list:
-            all_aug_data.extend(aug_data)
-            end_idx = start_idx + len(aug_data)
-            policy_indices.append((start_idx, end_idx))
-            start_idx = end_idx
+    #     start_idx = 0
+    #     for aug_data in aug_data_list:
+    #         all_aug_data.extend(aug_data)
+    #         end_idx = start_idx + len(aug_data)
+    #         policy_indices.append((start_idx, end_idx))
+    #         start_idx = end_idx
         
-        # 批量处理所有增强数据
-        aug_feat, _ = getdatafeat(args, resize_size, all_aug_data, model)
-        if args.gpu:
-            aug_feat = torch.cat(aug_feat).detach()
-        else:
-            aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
-        # 使用PCA转换特征
-        aug_feat = pca.transform(aug_feat)
+    #     # 批量处理所有增强数据
+    #     aug_feat, _ = getdatafeat(args, resize_size, all_aug_data, model)
+    #     if args.gpu:
+    #         aug_feat = torch.cat(aug_feat).detach()
+    #     else:
+    #         aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
+    #     # 使用PCA转换特征
+    #     aug_feat = pca.transform(aug_feat)
         
-        # 拆分结果并计算每个策略的损失
-        losses = []
-        st = time.time()
-        for start_idx, end_idx in policy_indices:
-            policy_feat = aug_feat[start_idx:end_idx]
+    #     # 拆分结果并计算每个策略的损失
+    #     losses = []
+    #     st = time.time()
+    #     for start_idx, end_idx in policy_indices:
+    #         policy_feat = aug_feat[start_idx:end_idx]
             
-            if args.gpu:
-                loss1 = kl_divergence_kde(feat_list, policy_feat)
-                loss2 = kl_divergence_kde(feat_list[groups[group_id]], policy_feat)
-            else:
-                loss1 = KL_loss(feat_list, policy_feat)
-                loss2 = KL_loss(feat_list[groups[group_id]], policy_feat)
+    #         if args.gpu:
+    #             loss1 = kl_divergence_kde(feat_list, policy_feat)
+    #             loss2 = kl_divergence_kde(feat_list[groups[group_id]], policy_feat)
+    #         else:
+    #             loss1 = KL_loss(feat_list, policy_feat)
+    #             loss2 = KL_loss(feat_list[groups[group_id]], policy_feat)
             
-            l = 1
-            loss = loss1 - l * loss2
-            losses.append(loss)
+    #         l = 1
+    #         loss = loss1 - l * loss2
+    #         losses.append(loss)
         
-        all_losses.extend(losses)
-        del aug_data_list, aug_feat, all_aug_data
+    #     all_losses.extend(losses)
+    #     del aug_data_list, aug_feat, all_aug_data
     # 使用并行方式处理每个策略的数据
     # 原有批量处理方式
     '''
@@ -322,6 +371,7 @@ def evalFunc(policy, params):
     #         loss3 += KL_loss(feat_list[groups[i]], aug_feat)
     # loss = loss1 - l*loss2 + loss3
     loss = loss1 - l*loss2
+    print(f'loss1: {loss1}, loss2: {loss2}')
     # print(loss)
     # loss = loss2
     return loss
@@ -503,7 +553,7 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
               'resize_size':resize_size,
               'model':model,
               }
-    options = {'popsize':50,'maxgen':1,'rmp':0.3,'reps':1,'proxy_update':10}
+    options = {'popsize':50,'maxgen':50,'rmp':0.3,'reps':1,'proxy_update':10}
     currtime = datetime.datetime.now().strftime('%m-%d-%H-%M-%S')
     log_name = f'MFCAugment-{currtime}'
     writer = [SummaryWriter(log_dir=str(args.log_path.joinpath(args.save_name,log_name,f'task{x}'))) for x in range(len(tasks))]

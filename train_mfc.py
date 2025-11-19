@@ -128,7 +128,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 metrics = run_epoch(model, testloader
                 , criterion, None)
                 rs['test'].append(metrics)
-                print(f'Epoch [{epoch+1}/{max_epoch+1}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
+                print(f'Epoch [{epoch}/{max_epoch}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
             if rs['test'][-1]['f1'] > best_f1:
                 best_f1 = rs['test'][-1]['f1']
                 best_metrics = rs['test'][-1]

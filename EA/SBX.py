@@ -195,7 +195,7 @@ def SBX(Tasks, options, params, writer):
             bestobj_str = [f'{o:.4f}' for o in bestobj]
             print(f'Time:{time.time()-st:.2f} Generation: {ite} Repeat: {rep} Best Fitness: {bestobj_str}')
             for k in range(no_of_tasks):
-                writer[k].add_scalar(f'Best Fitness/Rep{rep}', bestobj[k], ite)
+                writer[k].add_scalar(f'Best_Fitness/Rep{rep}', bestobj[k], ite)
             formatted_pops = []
             for p in population:
                 ind = [f'{x:.3f}' for x in p.rnvec]
