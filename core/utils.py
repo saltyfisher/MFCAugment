@@ -26,29 +26,53 @@ def get_deepfeat(args, model, img):
     # 根据模型类型注册不同的hook
     model_type = model_name['type'] if isinstance(model_name, dict) else model_name
     
+    # if 'resnet' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # elif 'wideresnet' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # elif 'preactresnet' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # elif 'vgg' in model_type:
+    #     hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
+    # elif 'inception' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # elif 'efficient' in model_type:
+    #     hook_handle = model.classifier.register_forward_hook(hook_fn)
+    # elif 'googlenet' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # elif 'mobile' in model_type:
+    #     hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
+    # elif 'shufflenet' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # elif 'resnext' in model_type:
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    # else:
+    #     # 默认情况，尝试使用avgpool
+    #     hook_handle = model.avgpool.register_forward_hook(hook_fn)
+
     if 'resnet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     elif 'wideresnet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     elif 'preactresnet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     elif 'vgg' in model_type:
-        hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
+        hook_handle = model.module.classifier[-1].register_forward_hook(hook_fn)
     elif 'inception' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     elif 'efficient' in model_type:
-        hook_handle = model.classifier.register_forward_hook(hook_fn)
+        hook_handle = model.module.classifier.register_forward_hook(hook_fn)
     elif 'googlenet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     elif 'mobile' in model_type:
-        hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
+        hook_handle = model.module.classifier[-1].register_forward_hook(hook_fn)
     elif 'shufflenet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     elif 'resnext' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     else:
         # 默认情况，尝试使用avgpool
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     
     imgs = torch.split(img, batch_size, dim=0)
     feat = []

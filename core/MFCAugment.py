@@ -14,7 +14,8 @@ import pickle
 import datetime
 import matplotlib.pyplot as plt
 # import geatpy as ea
-
+import kornia.augmentation as K
+from concurrent.futures import ProcessPoolExecutor
 from tensorboardX import SummaryWriter
 from torch_pca import PCA as PCA_torch
 from tqdm import tqdm
@@ -48,10 +49,11 @@ from core.trainer_proxy import train_proxy, test_proxy
 # from core.dataCluster import constrained_kmeans_ilp
 
 def getdatafeat(args, resize_size, data_list, model):
+    model = torch.nn.DataParallel(model)
     st = time.time()
     if args.resize:
         transformer = transforms.Compose([transforms.Resize(resize_size), ToTensor()])
-        batch = 4112
+        batch = 8192
         # if args.dataset == 'chestct':
         #     batch = 16
         # if args.dataset == 'breakhis':
@@ -94,6 +96,11 @@ class SingleTask(object):
         params.update({'Lb':self.Lb,'Ub':self.Ub})
         return self.evalfnc(x, params)
 
+def apply_aug(args):
+    d, policy, num_ops = args
+    aug = MyAugment(policy, num_ops)
+    return aug(d) 
+
 def evalFuncBatch(policies, params):
     """
     批量评估函数，将所有个体的增强数据合并后批量处理以提高效率
@@ -129,6 +136,8 @@ def evalFuncBatch(policies, params):
             #         joblib.delayed(aug)(d) 
             #         for d in data
             #     )
+            # with ProcessPoolExecutor(max_workers=8) as ex:
+            #     aug_data = list(ex.map(apply_aug, [(d, policy, params['n_op']) for d in data]))
             for d in data:
                 aug_data.append(aug(d))
             aug_data_list.append(aug_data)
@@ -494,7 +503,7 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
               'resize_size':resize_size,
               'model':model,
               }
-    options = {'popsize':50,'maxgen':50,'rmp':0.3,'reps':1,'proxy_update':10}
+    options = {'popsize':50,'maxgen':1,'rmp':0.3,'reps':1,'proxy_update':10}
     currtime = datetime.datetime.now().strftime('%m-%d-%H-%M-%S')
     log_name = f'MFCAugment-{currtime}'
     writer = [SummaryWriter(log_dir=str(args.log_path.joinpath(args.save_name,log_name,f'task{x}'))) for x in range(len(tasks))]

@@ -31,6 +31,8 @@ class Mydata(torchvision.datasets.ImageFolder):
         if hasattr(self, 'groups'):
             if index in self.groups:
                 sample = self.mfc_transform[0](sample)
+            else:
+                sample = self.transform(sample)
         else:
             if self.transform is not None:
                 sample = self.transform(sample)
