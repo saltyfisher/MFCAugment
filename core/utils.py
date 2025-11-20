@@ -83,6 +83,9 @@ def get_deepfeat(args, model, img):
             y = F.softmax(y, dim=1)
         out.append(y.view(x.size(0),-1))
         extracted_feat = hook_fn.features
+        extracted_feat = extracted_feat.squeeze()
+        if len(extracted_feat.shape) < 2:
+            extracted_feat = extracted_feat.unsqueeze(0)
         feat.append(extracted_feat.squeeze())
 
         del y, extracted_feat

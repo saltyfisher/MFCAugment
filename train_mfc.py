@@ -147,7 +147,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             }, str(save_path.joinpath(save_name+'.pth')))   
         if args.online:
             trigger = (epoch % 40 == 0)
-            trigger = (epoch == epoch_start)
+            # trigger = (epoch == epoch_start)
         else:
             trigger = (epoch == epoch_start)
         if args.mfc and trigger:
