@@ -45,7 +45,7 @@ def MFSBX(Tasks, options, params, writer):
                 fnceval_calls[rep] += r[1]
                 population[r[2]] = r[0]
             TotalEvaluations[rep, 0] = fnceval_calls[rep]
-            print(f'Initializing:{time.time()-st:.2f}')
+            # print(f'Initializing:{time.time()-st:.2f}')
             recorder[rep]['Pops'].append([population[i].rnvec for i in range(pop)])
             recorder[rep]['Fval'].append([population[i].factorial_costs[population[i].skill_factor] for i in range(pop)])
             recorder[rep]['SkillFactor'].append([population[i].skill_factor for i in range(pop)])

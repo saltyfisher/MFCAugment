@@ -30,9 +30,7 @@ class Mydata(torchvision.datasets.ImageFolder):
         sample = self.loader(path)
         if hasattr(self, 'groups'):
             if index in self.groups:
-                transform_idx = np.random.randint(0, len(self.mfc_transform))
-                sample = self.mfc_transform[transform_idx](sample)
-                # sample = self.mfc_transform[0](sample)
+                sample = self.mfc_transform[0](sample)
             else:
                 sample = self.transform(sample)
         else:
@@ -44,7 +42,7 @@ class Mydata(torchvision.datasets.ImageFolder):
         return sample, target
 
     def get_all_files(self):
-        data_list = [self.loader(path) for path, target in self.samples]
+        data_list = [self.transform(self.loader(path)) for path, target in self.samples]
         label_list = self.targets
         return data_list, label_list
     
@@ -74,7 +72,7 @@ class Mydatasubset(Subset):
         return sample, target
 
     def get_all_files(self):
-        data_list = [self.dataset.loader(self.dataset.samples[i][0]) for i in self.indices]
+        data_list = [self.transform(self.dataset.loader(self.dataset.samples[i][0])) for i in self.indices]
         label_list = [self.dataset.targets[i] for i in self.indices]
         return data_list, label_list
     

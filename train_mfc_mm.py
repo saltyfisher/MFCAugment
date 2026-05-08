@@ -26,19 +26,22 @@ from torch import nn, optim
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
-from data import get_data
+from data_mm import get_data
 from networks import get_model, num_class
-from utils import initialize_setting
+from core.utils import mixup_criterion
 from theconf import Config as C
 from lr_scheduler import adjust_learning_rate_resnet
 from metrics import Accumulator
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from warmup_scheduler import GradualWarmupScheduler
 from common import get_logger
-from core.MFCAugment import MFCAugment
-from core.augmentations import MyAugment, RandAugment, TrivialAugmentWide
+from core.MFCAugment_mm import MFCAugment as MFCAugmentMM
+from core.MFCAugment import MFCAugment as MFCAugment
+from core.augmentations import MyAugmentMM, RandAugment, TrivialAugmentWide, MyAugment
+from DIM_model import DIMModel
 import csv
 import statistics
+import pickle
 
 logger = get_logger('MFC')
 logger.setLevel(logging.DEBUG)
@@ -49,7 +52,7 @@ def to_one_hot(inp, num_classes, device='cuda'):
     y_onehot.scatter_(1, inp.unsqueeze(1), 1)
     return y_onehot
 
-def run_epoch(model, loader, loss_fn, optimizer):
+def run_epoch(model, loader, loss_fn, optimizer, aug_mm, groups, matting_method):
     cnt = 0
     steps = 0
     device = next(model.parameters()).device
@@ -61,11 +64,36 @@ def run_epoch(model, loader, loss_fn, optimizer):
         steps += 1
         data = data.to(device) 
         label = label.to(device)
+
         if optimizer:
             optimizer.zero_grad()
 
-        preds = model(data)
-        loss = loss_fn(preds, label)
+        if aug_mm == []:
+            preds = model(data)
+            loss = loss_fn(preds, label)
+        else:
+            source_idx = torch.randperm(data.shape[0]).to(device)
+            aug_data = []
+            source_label = []
+            target_label = []
+            lam = []
+            loss = 0
+            aug_idx = np.random.randint(0, len(aug_mm))
+            for i, d in enumerate(source_idx):
+                source_data = data[d].squeeze()
+                target_data = data[i].squeeze()
+                mix_region, mask, ratio = aug_mm[aug_idx](source_data, matting_method)
+                aug_data.append(mix_region + (1-mask)*target_data)
+                lam.append(ratio)
+                source_label.append(label[d])
+                target_label.append(label[i])
+
+
+            aug_data = torch.stack(aug_data)
+            preds = model(aug_data)
+
+            for i in range(data.shape[0]):
+                loss += mixup_criterion(loss_fn, preds[i], source_label[i], target_label[i], lam[i])
         if optimizer:
             loss.backward()
         if optimizer:
@@ -92,7 +120,7 @@ def run_epoch(model, loader, loss_fn, optimizer):
 
     return metrics
 
-def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None):
+def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=None, log_path=None, save_name=None, pretrain_model=None, matting_method=None):
     
     criterion = nn.CrossEntropyLoss()
     
@@ -116,10 +144,14 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
 
     policy = []
     policy_subset = []
+    aug_mm = []
+    groups = []
+    all_policy_subset = []
     for epoch in range(epoch_start, max_epoch+1):
+    # for epoch in range(epoch_start, 2):
         model.train()    
         st = time.time() 
-        metrics = run_epoch(model, traintestloader, criterion, optimizer)
+        metrics = run_epoch(model, traintestloader, criterion, optimizer, aug_mm, groups, matting_method)
         # print('time elapsed: %.2f' % (time.time()-st))
         rs['train'].append(metrics)
         loss = metrics['loss']
@@ -129,28 +161,23 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
         # scheduler.step()
         result = OrderedDict()
         
-        if (save_path is not None):
+        if epoch % 1 == 0 or epoch == max_epoch:
             with torch.no_grad():
-                metrics = run_epoch(model, testloader
-                , criterion, None)
+                metrics = run_epoch(model, testloader, criterion, None, [], None, None)
                 rs['test'].append(metrics)
                 print(f'Epoch [{epoch}/{max_epoch}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
             if rs['test'][-1]['f1'] > best_f1:
                 best_f1 = rs['test'][-1]['f1']
                 best_metrics = rs['test'][-1]
             if save_path:
-                # logger.info('save model@%d to %s' % (epoch, save_path))
-                
                 torch.save({
                 'epoch': epoch,
                 'log': {
                     'train': [rs['train'][i] for i in range(len(rs['train']))],
                     'test': [rs['test'][i] for i in range(len(rs['test']))],
                 },
-                # 'optimizer': optimizer.state_dict(),
-                # 'model': model.state_dict(),
-                'BestPolicy':policy
-            }, str(save_path.joinpath(save_name+'.pth')))   
+                'model': model.state_dict(),
+                }, save_name+'.pth')   
         if args.online:
             if args.testing:
                 trigger = (epoch == epoch_start)
@@ -168,16 +195,17 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             else:
                 cluster_num = 4
             # cluster_num = 3
-            policy_subset, groups = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops)
+            if args.matting:
+                policy_subset, groups = MFCAugmentMM(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops, matting_method=matting_method)
+            else:
+                policy_subset, groups = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops, matting_method=matting_method)
             if policy_subset == []:
                 continue
-            if args.resize:
-                    optimal_policy = [torchvision.transforms.Compose([transforms.Resize(resize_size),MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops),
-                                                        transforms.ToTensor()]) for p in policy_subset]
+            all_policy_subset.append(policy_subset)
+            if args.matting:
+                aug_mm = [MyAugmentMM(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops) for p in policy_subset]
             else:
-                optimal_policy = [torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops),
-                                                        transforms.Resize(resize_size),
-                                                        transforms.ToTensor()]) for p in policy_subset]
+                aug_mm = [MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops) for p in policy_subset]
             if args.group:
                 g = [0]*len(traintest_dataset)
                 for groups_idx, ind_idx in enumerate(groups):
@@ -187,9 +215,6 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             else:
                 groups = np.unique(np.concatenate(groups))
             policy.append(policy_subset)
-            traintest_dataset.update_transform(optimal_policy, transform_train, groups)
-            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-            testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     # 输出本次训练的最优结果
     if best_metrics is not None:
@@ -197,7 +222,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
         for key, value in best_metrics.items():
             print(f"  {key}: {value:.4f}")
     
-    return model, best_metrics
+    return model, best_metrics, all_policy_subset
     
 def run_python_file(args):
     # command = [python_executable, file_name] + list(args)
@@ -253,15 +278,39 @@ if __name__ == '__main__':
     parser.add_argument('--l', type=int, default=1, help='目标函数权重')
     parser.add_argument('--mag_bin', type=int, default=31, help='变换操作强度离散个数')
     parser.add_argument('--prob_bin', type=int, default=10, help='变换概率离散个数')
+    parser.add_argument('--post_augment', action='store_true')
+    parser.add_argument('--matting',action='store_true')
     parser.add_argument('--testing', action='store_true')
     args = parser.parse_args()
 
     # 创建results目录
-    os.makedirs('result', exist_ok=True)
+    stats_path = './result'
+    model_params_path = './params_save'
+    log_path = './logs'
+    os.makedirs(log_path, exist_ok=True)
+    os.makedirs(stats_path, exist_ok=True)
+    os.makedirs(model_params_path, exist_ok=True)
+    strategy_name = 'mfc' if args.mfc else args.strategy
+    save_name = "mm" if args.matting else ""
+    if args.dataset == 'breakhis':
+        save_name += f"_{args.dataset}_{args.magnification}X_{strategy_name}_{args.model}"
+    else:
+        save_name += f"{args.dataset}_{strategy_name}_{args.model}"
+    if args.post_augment == False:
+        save_name += '_no_postaugment'
+    result_filename = save_name + '.txt'
+    result_filename = os.path.join(stats_path, result_filename)
+    # 保存统计结果到CSV文件
+    csv_filename = save_name + '.csv'
+    params_filename = save_name + '.npy'
+    csv_filename = os.path.join(stats_path, csv_filename)
+    params_filename = os.path.join(stats_path, params_filename)
     
+    args.save_name = save_name
+    args.log_path = log_path
     # 存储所有试验的结果
     all_trials_results = []
-
+    all_trials_policy = []
     for itrs in range(0, args.num_trials):        
         print(f"\n{'='*50}")
         print(f"开始第 {itrs + 1}/{args.num_trials} 次独立实验")
@@ -278,40 +327,33 @@ if __name__ == '__main__':
             optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
             print(f"Using Adam optimizer with learning rate {args.lr}")
 
-        save_path = Path('./params_save')
-        log_path = Path('./logs')
-        save_name = f"{args.dataset}_{args.test_split}"
-        if args.dataset == 'breakhis':
-            save_name += f'_{args.magnification}X'
-        if args.mfc:
-            save_name = save_name + '_mfc'
-        else:
-            if args.strategy != '':
-                save_name = save_name + f'_{args.strategy}'
-        save_name = save_name + f'_{args.model}'
+        
         print(save_name+f'_itrs{itrs+1}')
-        if args.mfc:
-            save_path = save_path.joinpath('mfc')
-            log_path = log_path.joinpath('mfc')
-            args.log_path = log_path
-            args.save_path = save_path
-        if args.online:
-            save_name += '_online'
-        if args.proxy:
-            save_name += '_proxy'
-            args.proxy_log_path = log_path.joinpath('proxy')
-            args.proxy_save_path = save_path.joinpath('proxy')
-        if args.GD:
-            save_name += '_GD'
-            args.GD_log_path = log_path.joinpath('GD')
-            args.GD_save_path = save_path.joinpath('GD')
-        args.save_name = save_name
 
-        os.makedirs(save_path, exist_ok=True)
-        model, best_metrics = train_val(model, optimizer, num_classes, args, itrs, '../MedicalImageClassficationData',save_path,log_path,save_name, model)
+        checkpoint = 'BEST_params_DIM.pth'
+        matting_model = DIMModel()
+        matting_model.load_state_dict(torch.load(checkpoint))
+        matting_model = matting_model.to('cuda')
+        matting_model.eval()
+
+        if args.post_augment==False:
+            args.num_ops = 0
+        model, best_metrics, all_policy_subset = train_val(model, optimizer, num_classes, args, itrs, '../MedicalImageClassficationData',model_params_path,log_path,save_name, model,matting_method=matting_model)
+        all_trials_policy.append(all_policy_subset)
+        if os.path.exists(params_filename):
+            with open(params_filename, 'rb') as f:
+                trials_result = pickle.load(f)
+                trials_result.append(all_policy_subset)
+            with open(params_filename, 'wb') as f:
+                pickle.dump(trials_result, f)
+        else:
+            with open(params_filename, 'wb') as f:
+                pickle.dump(all_trials_policy, f)
         # 保存本次实验的最佳结果
         if best_metrics is not None:
             all_trials_results.append(best_metrics)
+            with open(result_filename, 'a+') as f:
+                f.write(str(best_metrics)+"\n")
         # break   
     
     # 所有轮次结束后计算统计信息
@@ -340,12 +382,6 @@ if __name__ == '__main__':
             print(f"  最小值: {stats[metric]['min']}")
         
         # 保存统计结果到CSV文件
-        strategy_name = 'mfc' if args.mfc else args.strategy
-        if args.dataset == 'breakhis':
-            csv_filename = f"result/{args.dataset}_{args.magnification}X_{strategy_name}_{args.model}.csv"
-        else:
-            csv_filename = f"result/{args.dataset}_{strategy_name}_{args.model}.csv"
-        
         with open(csv_filename, 'w', newline='') as csvfile:
             fieldnames = ['metric', 'mean', 'std', 'max', 'min']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -359,5 +395,11 @@ if __name__ == '__main__':
                     'max': stats[metric]['max'],
                     'min': stats[metric]['min']
                 })
+            for i, trial_result in enumerate(all_trials_results):
+                acc = trial_result['accuracy']
+                prec = trial_result['precision']
+                rec = trial_result['recall']
+                f1 = trial_result['f1']
+                csvfile.write(f"{i+1},{acc:.4f},{prec:.4f},{rec:.4f},{f1:.4f}\n")
         
         print(f"\n统计结果已保存到 {csv_filename}")

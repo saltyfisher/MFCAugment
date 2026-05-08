@@ -4,10 +4,13 @@ import torch.nn as nn
 import torch.nn.functional as F   
 import torch.distributions as distributions 
 import numpy as np
+import gco
+import cv2
 
 from scipy.spatial.distance import cosine
 from scipy.stats import gaussian_kde
 from scipy.integrate import quad
+from scipy.ndimage import convolve1d
 
 def get_deepfeat(args, model, img):
     model_name = args.model
@@ -26,57 +29,59 @@ def get_deepfeat(args, model, img):
     # 根据模型类型注册不同的hook
     model_type = model_name['type'] if isinstance(model_name, dict) else model_name
     
-    if 'resnet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-    elif 'wideresnet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-    elif 'preactresnet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-    elif 'vgg' in model_type:
-        hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
-    elif 'inception' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-    elif 'efficient' in model_type:
-        hook_handle = model.classifier.register_forward_hook(hook_fn)
-    elif 'googlenet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-    elif 'mobile' in model_type:
-        hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
-    elif 'shufflenet' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-    elif 'resnext' in model_type:
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
+    if isinstance(model, nn.DataParallel):
+        if 'resnet' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        elif 'wideresnet' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        elif 'preactresnet' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        elif 'vgg' in model_type:
+            hook_handle = model.module.classifier[-1].register_forward_hook(hook_fn)
+        elif 'inception' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        elif 'efficient' in model_type:
+            hook_handle = model.module.classifier.register_forward_hook(hook_fn)
+        elif 'googlenet' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        elif 'mobile' in model_type:
+            hook_handle = model.module.classifier[-1].register_forward_hook(hook_fn)
+        elif 'shufflenet' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        elif 'resnext' in model_type:
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        else:
+            # 默认情况，尝试使用avgpool
+            hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
     else:
-        # 默认情况，尝试使用avgpool
-        hook_handle = model.avgpool.register_forward_hook(hook_fn)
-
-    # if 'resnet' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # elif 'wideresnet' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # elif 'preactresnet' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # elif 'vgg' in model_type:
-    #     hook_handle = model.module.classifier[-1].register_forward_hook(hook_fn)
-    # elif 'inception' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # elif 'efficient' in model_type:
-    #     hook_handle = model.module.classifier.register_forward_hook(hook_fn)
-    # elif 'googlenet' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # elif 'mobile' in model_type:
-    #     hook_handle = model.module.classifier[-1].register_forward_hook(hook_fn)
-    # elif 'shufflenet' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # elif 'resnext' in model_type:
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
-    # else:
-    #     # 默认情况，尝试使用avgpool
-    #     hook_handle = model.module.avgpool.register_forward_hook(hook_fn)
+        if 'resnet' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        elif 'wideresnet' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        elif 'preactresnet' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        elif 'vgg' in model_type:
+            hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
+        elif 'inception' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        elif 'efficient' in model_type:
+            hook_handle = model.classifier.register_forward_hook(hook_fn)
+        elif 'googlenet' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        elif 'mobile' in model_type:
+            hook_handle = model.classifier[-1].register_forward_hook(hook_fn)
+        elif 'shufflenet' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        elif 'resnext' in model_type:
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)
+        else:
+            # 默认情况，尝试使用avgpool
+            hook_handle = model.avgpool.register_forward_hook(hook_fn)  
     
     imgs = torch.split(img, batch_size, dim=0)
     feat = []
     out = []
+    device = next(model.parameters()).device
     for x in imgs:
         with torch.no_grad():
             y = model(x)
@@ -86,7 +91,9 @@ def get_deepfeat(args, model, img):
         extracted_feat = extracted_feat.squeeze()
         if len(extracted_feat.shape) < 2:
             extracted_feat = extracted_feat.unsqueeze(0)
-        feat.append(extracted_feat.squeeze())
+        extracted_feat = extracted_feat.to(device)
+        # print(extracted_feat.shape)
+        feat.append(extracted_feat)
 
         del y, extracted_feat
 
@@ -422,6 +429,121 @@ def kl_divergence_kde(p_samples, q_samples, bandwidth=None):
     eps = 1e-12
     kl_vals = torch.log((p_pdf + eps) / (q_pdf + eps))
     return kl_vals.mean().item()
+
+import torch
+
+def _scott_bandwidth_1d(samples):
+    # Scott's rule: h = sigma * n^(-1/5)
+    n = samples.shape[0]
+    std = samples.std(unbiased=True)
+    h = std * (n ** (-1.0 / 5.0))
+    # 数值保护，避免 h=0
+    return torch.clamp(h, min=1e-12)
+
+def _silverman_bandwidth_1d(samples):
+    # Silverman's rule: h = 1.06 * sigma * n^(-1/5)
+    n = samples.shape[0]
+    std = samples.std(unbiased=True)
+    h = 1.06 * std * (n ** (-1.0 / 5.0))
+    return torch.clamp(h, min=1e-12)
+
+def kde_1d_torch(samples, grid, bandwidth=None, rule='scott'):
+    """
+    1D KDE with Gaussian kernel on a fixed grid.
+    samples: (N,) tensor
+    grid: (M,) tensor
+    bandwidth: float (tensor scalar) or None
+    rule: 'scott' or 'silverman'
+    return: (M,) normalized PDF on the grid
+    """
+    device = samples.device
+    samples = samples.reshape(-1)
+    grid = grid.reshape(-1)
+
+    if bandwidth is None:
+        if rule == 'silverman':
+            bandwidth = _silverman_bandwidth_1d(samples)
+        else:
+            bandwidth = _scott_bandwidth_1d(samples)
+
+    n = samples.shape[0]
+    # 计算核值: K(u) = (1/sqrt(2π)) * exp(-0.5 u^2), KDE = (1/(n h)) * sum K((x - xi)/h)
+    u = (grid.unsqueeze(1) - samples.unsqueeze(0)) / bandwidth  # (M, N)
+    kernel_vals = torch.exp(-0.5 * u.pow(2))  # (M, N)
+    pdf = (kernel_vals.sum(dim=1)) / (n * bandwidth * torch.sqrt(torch.tensor(2.0 * torch.pi, device=device)))
+
+    # 数值防护，避免负值或过小值
+    pdf = torch.clamp(pdf, min=1e-30)
+    # 归一化到积分为1（等距网格近似）
+    dx = (grid[1] - grid[0])
+    pdf = pdf / (pdf.sum() * dx)
+    return pdf
+
+def kde_kl_divergence_1d_torch(x, y, xbins=1000, epsilon=1e-10, rule='scott', margin=0.0, noise_level=0.0):
+    """
+    1D KL(P||Q) with KDE on a fixed grid, mimicking scipy version.
+    x, y: (Nx,), (Ny,) tensors (float)
+    xbins: grid size
+    epsilon: clamp minimum for densities
+    rule: 'scott' or 'silverman'
+    margin: extend the grid range by this fraction of range (e.g., 0.05 for ±5%)
+    noise_level: add small Gaussian noise to inputs to stabilize
+    """
+    device = x.device
+    x = x.reshape(-1)
+    y = y.reshape(-1)
+
+    if noise_level > 0.0:
+        x = x + torch.randn_like(x) * noise_level
+        y = y + torch.randn_like(y) * noise_level
+
+    xmin = torch.min(torch.min(x), torch.min(y))
+    xmax = torch.max(torch.max(x), torch.max(y))
+    rng = xmax - xmin
+    if margin > 0 and rng > 0:
+        xmin = xmin - rng * margin
+        xmax = xmax + rng * margin
+
+    grid = torch.linspace(xmin, xmax, xbins, device=device)
+
+    # 每个分布用自己的带宽（更贴近 scipy 的做法）
+    pdf_x = kde_1d_torch(x, grid, bandwidth=None, rule=rule)
+    pdf_y = kde_1d_torch(y, grid, bandwidth=None, rule=rule)
+
+    pdf_x = torch.clamp(pdf_x, min=epsilon)
+    pdf_y = torch.clamp(pdf_y, min=epsilon)
+
+    dx = (grid[1] - grid[0])
+    kl = torch.sum(pdf_x * torch.log(pdf_x / pdf_y)) * dx
+    return kl
+
+def kl_divergence_multivariate_torch(p, q, xbins=1000, epsilon=1e-10, rule='scott', margin=0.0, noise_level=1e-6):
+    """
+    多维KL(P||Q)，逐维做1D KDE并累加（与您现有的numpy/scipy实现一致）
+    p: (Np, D) tensor
+    q: (Nq, D) tensor
+    returns: scalar float KL
+    """
+    assert p.shape[1] == q.shape[1], "p and q must have the same number of features"
+    device = p.device
+    D = p.shape[1]
+    kl_total = torch.tensor(0.0, device=device)
+
+    for i in range(D):
+        xi = p[:, i]
+        yi = q[:, i]
+        kl_i = kde_kl_divergence_1d_torch(
+            xi, yi,
+            xbins=xbins,
+            epsilon=epsilon,
+            rule=rule,
+            margin=margin,
+            noise_level=noise_level
+        )
+        kl_total = kl_total + kl_i
+
+    return kl_total.item()
+
 def Jensen_loss(p, q):
     loss = 0.5 * KL_loss(p, q) + 0.5 * KL_loss(p, q)
     return loss
@@ -513,3 +635,165 @@ class LayerMonitor:
         """移除所有hook"""
         for handle in self.handles:
             handle.remove()
+
+def calculate_grid_pairwise_costs_convolved(img, sigma, pool_size):
+    """
+    Calculates horizontal, vertical, and diagonal pairwise costs for a grid graph.
+
+    Args:
+        img (np.ndarray): Input image (H, W, 3).
+        sigma (float): Color sensitivity parameter.
+        pool_size (int): Pooling window size for convolution.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: 
+            - pairwise_h: Horizontal costs, shape (H, W-1)
+            - pairwise_v: Vertical costs, shape (H-1, W)
+            - pairwise_dr: Diagonal right costs, shape (H-1, W-1)
+            - pairwise_dl: Diagonal left costs, shape (H-1, W-1)
+    """
+    h, w, _ = img.shape
+    img_float = img.astype(np.float32)
+    
+    kernel = np.ones(pool_size) / pool_size
+        
+    # 水平方向：计算相邻像素差异
+    horizontal_diff = np.mean(np.abs(img_float[:, :-1, :] - img_float[:, 1:, :]), axis=2)
+    
+    # 垂直方向：计算相邻像素差异
+    vertical_diff = np.mean(np.abs(img_float[:-1, :, :] - img_float[1:, :, :]), axis=2)
+    
+    # 对角线方向：计算相邻像素差异
+    # 右下对角线 (i,j) 和 (i+1,j+1)
+    diag_right_diff = np.mean(np.abs(img_float[:-1, :-1, :] - img_float[1:, 1:, :]), axis=2)
+    
+    # 左下对角线 (i,j+1) 和 (i+1,j)
+    diag_left_diff = np.mean(np.abs(img_float[:-1, 1:, :] - img_float[1:, :-1, :]), axis=2)
+    
+    # 对水平方向差异使用水平convolve1d（沿axis=1，即列方向）
+    pairwise_h = convolve1d(horizontal_diff, kernel, axis=1, mode='constant', cval=0.0)
+    
+    # 对垂直方向差异使用垂直convolve1d（沿axis=0，即行方向）
+    pairwise_v = convolve1d(vertical_diff, kernel, axis=0, mode='constant', cval=0.0)
+    
+    # 对对角线方向差异使用convolve1d
+    pairwise_dr = convolve1d(convolve1d(diag_right_diff, kernel, axis=1, mode='constant', cval=0.0), 
+                             kernel, axis=0, mode='constant', cval=0.0)
+    pairwise_dl = convolve1d(convolve1d(diag_left_diff, kernel, axis=1, mode='constant', cval=0.0), 
+                             kernel, axis=0, mode='constant', cval=0.0)
+
+    # 归一化到[0,1]范围
+    # if pairwise_h.max() > 1:
+    #     pairwise_h = pairwise_h / pairwise_h.max()
+    # if pairwise_v.max() > 1:
+    #     pairwise_v = pairwise_v / pairwise_v.max()
+    # if pairwise_dr.max() > 1:
+    #     pairwise_dr = pairwise_dr / pairwise_dr.max()
+    # if pairwise_dl.max() > 1:
+    #     pairwise_dl = pairwise_dl / pairwise_dl.max()
+
+    return pairwise_h, pairwise_v, pairwise_dr, pairwise_dl
+
+def trimap_generate(input,
+                saliency,
+                trimap_alpha=10,
+                trimap_alpha_threshold=0.2,
+                trimap_gen='graph',
+                sigma1=None,
+                sigma2=None,
+                lam1=None,
+                lam2=None,
+                mp=None,):
+    
+    if trimap_gen == 'graph':
+        large_val_pairwise = 10
+        large_val_unary = 100
+        h, w, c = input.shape
+        unary = np.zeros((3, h, w))
+        # saliency = cv2.GaussianBlur(saliency, (3, 3), 0)
+        # 0 for background, 2 for foreground, 1 for unknown
+        unary[0] = -1*np.log(1-saliency+1e-8)
+        unary[2] = -1*np.log(saliency+1e-8)
+        # unary[0] = saliency
+        # unary[1] = 1-saliency
+        unary[1] = trimap_alpha * (saliency - 0.5)**2
+
+        pairwise_cost = np.zeros((3, 3), dtype=np.float32)
+        for i in range(3):
+            for j in range(3):
+                pairwise_cost[i, j] = (i - j)**2 / (3 - 1)**2
+        
+        # pairwise_cost = np.ones((3,3), dtype=np.float32)
+        # np.fill_diagonal(pairwise_cost, 0)
+        # pairwise_cost = np.array([
+        #     [0, lam1, lam2],
+        #     [lam1, 0, lam2],
+        #     [lam2, lam2, 0]
+        # ])
+
+        # input = input.transpose(1, 2, 0)
+        unary = unary.transpose(1, 2, 0)
+        # pairwise_h, pairwise_v = calculate_grid_pairwise_costs(input, sigma2)
+        pairwise_h, pairwise_v, pairwise_dr, pairwise_dl = calculate_grid_pairwise_costs_convolved(input, sigma1, 3)
+        pairwise_h = np.nan_to_num(pairwise_h, nan=0.0, posinf=0.0, neginf=0.0)
+        pairwise_v = np.nan_to_num(pairwise_v, nan=0.0, posinf=0.0, neginf=0.0)
+        pairwise_dr = np.nan_to_num(pairwise_dr, nan=0.0, posinf=0.0, neginf=0.0)
+        pairwise_dl = np.nan_to_num(pairwise_dl, nan=0.0, posinf=0.0, neginf=0.0)
+        pairwise_h = (pairwise_h * large_val_pairwise).astype(np.int32)
+        pairwise_v = (pairwise_v * large_val_pairwise).astype(np.int32)
+        pairwise_dr = (pairwise_dr * large_val_pairwise).astype(np.int32)
+        pairwise_dl = (pairwise_dl * large_val_pairwise).astype(np.int32)
+
+        # unary[:,:-1] += np.repeat(pairwise_h[:,:,np.newaxis],3,axis=2)
+        # unary[:-1,:] += np.repeat(pairwise_v[:,:,np.newaxis],3,axis=2)
+        unary = np.nan_to_num(unary, nan=0.0, posinf=large_val_unary, neginf=-large_val_unary)
+        # unary = (unary * large_val_unary).astype(np.int32)
+        mask = gco.cut_grid_graph(unary, pairwise_cost, pairwise_v, pairwise_h, pairwise_dr, pairwise_dl, algorithm='swap')
+
+        # edges, weights = _calculate_pairwise_costs_vectorized(input, sigma2)
+        # edges, weights = calculate_pairwise_costs_with_convolve1d(input)
+        # unary = unary.reshape(h*w, 3)
+        # unary = np.nan_to_num(unary, nan=0.0, posinf=large_val, neginf=-large_val)
+        # unary = (unary * large_val).astype(np.int32)
+        # weights = np.nan_to_num(weights, nan=0.0, posinf=0, neginf=0)
+        # weights = (weights * large_val).astype(np.int32)
+        # mask = gco.cut_general_graph(edges, weights, unary, pairwise_cost, algorithm='swap')
+
+        mask = mask.reshape(h, w)
+        mask[mask == 0] = 255
+        mask[mask == 1] = 128
+        mask[mask == 2] = 0
+    elif trimap_gen == 'stats':
+        mask = saliency.copy()
+        _, mask1 = cv2.threshold((saliency*255).astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        t_bg = np.quantile(saliency, trimap_alpha_threshold)
+        t_fg = np.quantile(saliency, 1-trimap_alpha_threshold)
+        mask[mask<=t_bg] = 0
+        mask[mask>=t_fg] = 1
+        mask[(mask>t_bg)&(mask<t_fg)] = 0.5
+        mask = (mask * 255).astype(np.uint8)
+    # if mp is None:
+    #     mask = []
+    #     for i in range(b):
+    #         # 将数据移动到正确的设备上
+    #         mask_i = gco.cut_grid_graph(unary[i], pairwise_h[i], pairwise_v[i], pairwise_cost)
+    #         mask.append(mask_i)
+    # else:
+    #     # 使用joblib替代multiprocessing，并传递索引确保输出与输入数据索引对齐
+    #     inputs = [(i, unary[i].detach(), 
+    #               pairwise_h[i], 
+    #               pairwise_v[i], 
+    #               pairwise_cost) 
+    #              for i in range(b)]
+    #     results = Parallel(n_jobs=1, backend='loky')(delayed(gco.cut_grid_graph)(*inp) for inp in inputs)
+        
+    #     # 根据索引重新排序结果
+    #     sorted_results = sorted(results, key=lambda x: x[0])
+    #     mask = [result[1] for result in sorted_results]
+
+    mask = mask.astype(np.uint8)
+    return mask
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Mixup损失函数"""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)

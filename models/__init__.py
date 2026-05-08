@@ -16,4 +16,4 @@ from torchvision.models import shufflenet_v2_x1_0 as shufflenet
 from torchvision.models import shufflenet_v2_x2_0 as shufflenetl
 from torchvision.models import resnext50_32x4d as resnext
 from .preactresnet import *
-from .wideresnet import Wide_ResNet as wideresnet
+from .wideresnet import Wide_ResNet as wideresnet28

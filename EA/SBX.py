@@ -104,7 +104,7 @@ def SBX(Tasks, options, params, writer):
             bestobj[i] = pops[0].cost
             bestInd_data[rep, i] = pops[0]
             gbest[i] = pops[0].rnvec
-            EvBestFitness[i + 2 * (rep), 0] = bestobj[i]
+            EvBestFitness[i+no_of_tasks*(rep), 0] = bestobj[i]
         
         ite = 1
         mu = 10
@@ -170,7 +170,7 @@ def SBX(Tasks, options, params, writer):
                     noImpove[i] = 0
                 else:
                     noImpove[i] += 1
-                EvBestFitness[i + 2 * (rep), ite-1] = bestobj[i]
+                EvBestFitness[i+no_of_tasks*(rep), ite-1] = bestobj[i]
 
                 # ranks = np.argsort([p.cost for p in intpopulation])
                 # intpopulation = [intpopulation[r] for r in ranks]

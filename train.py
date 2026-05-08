@@ -26,7 +26,7 @@ from networks import get_model, num_class
 from utils import initialize_setting
 from theconf import Config as C
 from lr_scheduler import adjust_learning_rate_resnet
-from metrics import accuracy, Accumulator, f1_score,precision_score,recall_score
+from metrics import Accumulator, accuracy_score, f1_score,precision_score,recall_score
 from warmup_scheduler import GradualWarmupScheduler
 from common import get_logger
 from core.MFCAugment import MFCAugment

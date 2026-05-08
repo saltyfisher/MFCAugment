@@ -25,7 +25,7 @@ from torch.utils.data import Dataset, DataLoader
 from itertools import chain
 from PIL import Image
 from core.FeatureExtractor import FeatureExtractor
-from core.augmentations import MyAugment, augmentation_space
+from core.augmentations import MyAugmentMM, augmentation_space
 from core.utils import KL_loss_all, KL_loss, Jensen_loss, Sinkhorn_dist, kl_divergence_kde, kl_divergence_multivariate_torch
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.mixture import GaussianMixture
@@ -47,19 +47,20 @@ from core.utils import get_deepfeat, get_clsprob
 from core.model import Proxy, RBFNetwork, G_D
 from core.trainer_GD import train_GD, test_GD
 from core.trainer_proxy import train_proxy, test_proxy
+from core.augmentations import MM
 # from core.dataCluster import constrained_kmeans_ilp
 
 def getdatafeat(args, resize_size, data_list, model):
     # model = torch.nn.DataParallel(model)
     st = time.time()
     if args.resize:
-        transformer = transforms.Compose([transforms.Resize(resize_size), ToTensor()])
+        # transformer = transforms.Compose([transforms.Resize(resize_size), ToTensor()])
         batch = 8192
         # if args.dataset == 'chestct':
         #     batch = 16
         # if args.dataset == 'breakhis':
     else:
-        transformer = ToTensor()
+        # transformer = ToTensor()
         batch = 1
     
     all_feat_list = []
@@ -69,7 +70,8 @@ def getdatafeat(args, resize_size, data_list, model):
         batch_data = data_list[i:i+batch]
 
         # 创建当前批次的输入
-        input_list = [(transformer(d)).unsqueeze(0) for d in batch_data]
+        # input_list = [(transformer(d)).unsqueeze(0) for d in batch_data]
+        input_list = [(d).unsqueeze(0) for d in batch_data]
         batch_input = torch.cat(input_list).to(args.device)
         
         # 获取特征
@@ -258,13 +260,16 @@ def evalFuncBayes(policy, params):
     args = params['args']
     model = params['model']
     resize_size = params['resize_size']
+    matting_method = params['matting_method']
     # policy = np.floor(policy*(Ub-Lb)+Lb)
     # policy = formatPolicy(params, policy)
-    aug = MyAugment(policy,num_ops=params['n_op'])
+    aug = MyAugmentMM(policy,num_ops=params['n_op'], post_augment=args.post_augment)
     aug_data = []
-    data = [data_list[i] for i in groups[group_id]]
-    for d in data:
-        aug_data.append(aug(d))
+    target_data = [data_list[i] for i in groups[group_id]]
+    source_data = [data_list[i] for i in np.random.permutation(len(data_list))[:len(target_data)]]
+    for i, d in enumerate(source_data):
+        mix_data, mix_mask, _ = aug(d, matting_method)
+        aug_data.append(mix_data+(1-mix_mask)*np.array(target_data[i]))
     aug_feat, _ = getdatafeat(args,resize_size,aug_data,model)
     if args.gpu:
         aug_feat = torch.cat(aug_feat).detach()
@@ -394,7 +399,7 @@ def cluster_data_weighted(feat_list, label_list, n_clusters):
     # return groups, centers, intersection, ratio
 
     return groups, centers
-def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_bin=31, prob_bin=10, num_ops=2, max_samples=100):
+def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_bin=31, prob_bin=10, num_ops=2, max_samples=100, matting_method=None):
     total_op_num = len(augmentation_space())
     sample_num = 500
     ###提取特征### 
@@ -484,6 +489,7 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
         n_dims = 3
     else:
         n_dims = 2
+    num_ops += 1
     var_dim = num_ops*n_dims
     Lb = np.array([0]*var_dim)
     Ub = [total_op_num-1]*(num_ops) + [mag_bin-1]*num_ops
@@ -510,11 +516,12 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
               'args':args,
               'resize_size':resize_size,
               'model':model,
+              'matting_method':matting_method
               }
     options = {'popsize':30,'maxgen':2,'rmp':0.3,'reps':2,'proxy_update':10}
     currtime = datetime.datetime.now().strftime('%m-%d-%H-%M-%S')
     log_name = f'MFCAugment-{currtime}-{args.num_ops}'
-    writer = [SummaryWriter(log_dir=str(args.log_path.joinpath(args.save_name,log_name,f'task{x}'))) for x in range(len(tasks))]
+    writer = [SummaryWriter(log_dir=os.path.join(args.log_path, args.save_name, log_name, f'task{x}')) for x in range(len(tasks))]
     if args.multitask:
         if args.generative:
             if args.proxy:
@@ -617,15 +624,16 @@ def policy_decoder(augment, use_prob, n_op):
     op_idx = []
     op_level = []
     op_prob = []
-    for i in range(n_op):
+    for i in range(0, n_op):
         op_idx.append(augment['policy_%d' % i])
         op_level.append(augment['level_%d' % i])
-        if use_prob:
+        if i == 0:
+            op_prob.append(augment['prob_%d' % i])
+        elif use_prob:
             op_prob.append(augment['prob_%d' % i])
     formattedPolicy['op_index'] = np.array([op_idx])
     formattedPolicy['magnitude_index'] = np.array([op_level])
-    if use_prob:
-        formattedPolicy['prob_index'] = np.array([op_prob])
+    formattedPolicy['prob_index'] = np.array([op_prob])
 
     return formattedPolicy
 
@@ -661,10 +669,15 @@ def bayesian_optimization_tasks(tasks, args, params, max_evals=200):
         # 定义搜索空间
         space = {}
         for i in range(args.num_ops):
-            space['policy_%d' % i] = hp.choice('policy_%d' % i, list(range(0, len(augment_list()))))
-            if args.use_prob:                
-                space['prob_%d' % i] = hp.choice('prob_%d' % i, list(range(0, args.prob_bin-1)))
-            space['level_%d' % i] = hp.choice('level_%d' % i, list(range(0, args.mag_bin-1)))
+            if i == 0:
+                space['policy_%d' % i] = hp.choice('policy_%d' % i, 100)
+                space['prob_%d' % i] = hp.choice('prob_%d' % i, 10)
+                space['level_%d' % i] = hp.choice('level_%d' % i, 10)
+            else:
+                space['policy_%d' % i] = hp.choice('policy_%d' % i, list(range(0, len(augment_list()))))
+                if args.use_prob:                
+                    space['prob_%d' % i] = hp.choice('prob_%d' % i, list(range(0, args.prob_bin-1)))
+                space['level_%d' % i] = hp.choice('level_%d' % i, list(range(0, args.mag_bin-1)))
         
         # 定义目标函数
         def objective(x):
@@ -676,14 +689,6 @@ def bayesian_optimization_tasks(tasks, args, params, max_evals=200):
             trial_history.append(trial)
             return loss
         
-        x = {
-            'policy_0': 1,
-            'level_0': 1,
-            'policy_1': 1,
-            'level_1': 1
-        }
-
-        objective(x)
         # 执行贝叶斯优化
         trials = Trials()
         best = fmin(fn=objective,
@@ -744,7 +749,7 @@ def bayesian_optimization_tasks_parallel(tasks, args, params, rep=1, topk=100, m
     # 存储每个任务的结果
     final_results = []
     for r in range(rep):
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             # 提交所有任务
             future_to_task = {
                 executor.submit(bayesian_optimization_single_task, task_idx, args, task, params, rep, topk, max_evals): task_idx 
@@ -790,31 +795,28 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
     params['task_id'] = task_idx
     # 定义搜索空间
     space = {}
-    for i in range(args.num_ops):
-        space['policy_%d' % i] = hp.choice('policy_%d' % i, list(range(0, len(augment_list()))))
-        if args.use_prob:                
-            space['prob_%d' % i] = hp.choice('prob_%d' % i, list(range(0, args.prob_bin-1)))
-        space['level_%d' % i] = hp.choice('level_%d' % i, list(range(0, args.mag_bin-1)))
+    for i in range(args.num_ops+1):
+        if i == 0:
+            space['policy_%d' % i] = hp.choice('policy_%d' % i, [100])
+            space['prob_%d' % i] = hp.choice('prob_%d' % i, np.arange(0,1,0.1))
+            space['level_%d' % i] = hp.choice('level_%d' % i, np.arange(0,1,0.1))
+        else:
+            space['policy_%d' % i] = hp.choice('policy_%d' % i, list(range(0, len(augment_list()))))
+            if args.use_prob:                
+                space['prob_%d' % i] = hp.choice('prob_%d' % i, list(range(0, args.prob_bin-1)))
+            space['level_%d' % i] = hp.choice('level_%d' % i, list(range(0, args.mag_bin-1)))
     
     # 定义目标函数
     trial_history = []
     def objective(x):
         # 将字典转换为数组
-        policy = policy_decoder(x, args.use_prob, args.num_ops)
+        policy = policy_decoder(x, args.use_prob, args.num_ops+1)
         # 评估策略
         loss = task.evaluate(policy, params)
         trial = {'policy':policy,'loss':loss}
         trial_history.append(trial)
         return loss
-    
-    # x = {
-    #     'policy_0': 1,
-    #     'level_0': 1,
-    #     'policy_1': 1,
-    #     'level_1': 1
-    # }
 
-    # objective(x)
     # 执行贝叶斯优化
     trials = Trials()
     best = fmin(fn=objective,
@@ -830,21 +832,32 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
         p = r['policy']
         merged_policies['op_index'].append(p['op_index'])
         merged_policies['magnitude_index'].append(p['magnitude_index'])
-        if args.use_prob:
+        if (100 in p['op_index']) or args.use_prob:
             merged_policies['prob_index'].append(p['prob_index'])
     final_policies = {'op_index':[],'prob_index':[],'magnitude_index':[]}
     op_index = merged_policies['op_index']
     uni_op_index = np.unique(op_index, axis=0)
-    idx = [np.where((uni_op_index[i,:]==op_index).all(-1))[0] for i in range(uni_op_index.shape[0])]
+    all_idx = [np.where((uni_op_index[i,:]==op_index).all(-1))[0] for i in range(uni_op_index.shape[0])]
     final_policies['op_index'] = uni_op_index.squeeze()
     mag_idx = np.array(merged_policies['magnitude_index']).squeeze()
-    prob_idx = np.array(merged_policies['prob_index']).squeeze()
-    for i in idx:            
-        if args.use_prob:
-            final_policies['prob_index'].append(np.unique(prob_idx[i,:],axis=0))
-            final_policies['magnitude_index'].append(np.unique(mag_idx[i,:],axis=0))
+    if len(mag_idx.shape) < 2:
+        mag_idx = mag_idx[:, np.newaxis]
+    if args.use_prob:
+        prob_idx = np.array(merged_policies['prob_index']).squeeze()
+        if len(prob_idx.shape) < 2:
+            prob_idx = prob_idx[:, np.newaxis]
+    elif (100 in uni_op_index[i]):
+        prob_idx = np.array(merged_policies['prob_index']).squeeze()
+        if len(prob_idx.shape) < 2:
+            prob_idx = prob_idx[:, np.newaxis]
+    if len(mag_idx) < 2:
+        mag_idx = mag_idx.unsqueeze(0)
+    for i, idx in enumerate(all_idx):
+        if (100 in op_index[i]) or args.use_prob:
+            final_policies['prob_index'].append(np.unique(prob_idx[idx,:],axis=0))
+            final_policies['magnitude_index'].append(np.unique(mag_idx[idx,:],axis=0))
         else:
-            final_policies['magnitude_index'].append(np.unique(mag_idx[i,:],axis=0))
+            final_policies['magnitude_index'].append(np.unique(mag_idx[idx,:],axis=0))
     best_loss = min([trial['loss'] for trial in trial_history])
     elapsed_time = time.time() - st
     return final_policies, task_idx, elapsed_time, best_loss

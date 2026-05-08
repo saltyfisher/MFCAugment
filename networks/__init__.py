@@ -95,7 +95,7 @@ def num_class(dataset):
         'rect':2,
         'chestct':4,
         'EndoscopicBladder':4,
-        'Corona':7,
+        'corona':7,
         'kvasir-dataset':8,
         'PAD-UFES-20':6
     }[dataset]

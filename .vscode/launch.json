@@ -15,13 +15,16 @@
             "args":[
                 "--dataset","breakhis",
                 // "--dataset","chestct",
-                "--model","resnet18",
+                // "--model","resnet18",
                 "--magnification","40",
-                "--device","3",
+                // "--device","3",
                 "--mfc",
                 "--online",
                 "--resize",
                 "--gpu",
+                "--bayes",
+                "--bayes_max_eval","4",
+                "--testing"
                 // "--group",
                 // "--proxy",
                 // "--GD",
