@@ -649,6 +649,7 @@ class MyAugmentMM(torch.nn.Module):
         img = img.permute(1, 2, 0)
         geo_trans = []
         all_ops = self.policy['op_index']
+        mask = []
         if all_ops.shape == ():
             all_ops = [all_ops[np.newaxis]]
         idx = np.random.randint(len(all_ops))
@@ -699,7 +700,7 @@ class MyAugmentMM(torch.nn.Module):
                         img, affine_matrix = _apply_op_mm(img, op_name, m, interpolation=self.interpolation, fill=fill)
                     if affine_matrix != []:
                         geo_trans.append([op_name, affine_matrix])
-        if geo_trans != [] and self.post_augment:
+        if geo_trans != [] and self.post_augment and mask != []:
             for op_name, affine_matrix in geo_trans:
                 if op_name == 'Rotate':
                     mask = F_t.rotate(mask, matrix=affine_matrix)
@@ -708,6 +709,7 @@ class MyAugmentMM(torch.nn.Module):
 
         if self.resize:
             img = F.resize(img, self.resize_size)
-        mask = mask.to(img.device)
-        img = img * mask
+        if mask != []:
+            mask = mask.to(img.device)
+            img = img * mask
         return img, mask, ratio

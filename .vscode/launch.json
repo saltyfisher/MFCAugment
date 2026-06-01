@@ -13,8 +13,8 @@
             // "cwd": "${fileDirname}",
             "cwd": "${workspaceFolder}",   
             "args":[
-                "--dataset","breakhis",
-                // "--dataset","chestct",
+                // "--dataset","breakhis",
+                "--dataset","chestct",
                 // "--model","resnet18",
                 "--magnification","40",
                 // "--device","3",
@@ -24,7 +24,9 @@
                 "--gpu",
                 "--bayes",
                 "--bayes_max_eval","4",
-                "--testing"
+                "--testing",
+                "--group"
+                // "--post_augment"
                 // "--group",
                 // "--proxy",
                 // "--GD",

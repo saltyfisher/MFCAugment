@@ -1,7 +1,6 @@
-# 忽略 params_save 目录
+# 忽略目录
 params_save/
-
-# 忽略 vis 目录
+CHEIF/
 logs/
 
 # 忽略所有 .pth 文件

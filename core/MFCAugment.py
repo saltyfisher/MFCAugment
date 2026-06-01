@@ -53,13 +53,8 @@ def getdatafeat(args, resize_size, data_list, model):
     # model = torch.nn.DataParallel(model)
     st = time.time()
     if args.resize:
-        transformer = transforms.Compose([transforms.Resize(resize_size), ToTensor()])
         batch = 8192
-        # if args.dataset == 'chestct':
-        #     batch = 16
-        # if args.dataset == 'breakhis':
     else:
-        transformer = ToTensor()
         batch = 1
     
     all_feat_list = []
@@ -69,7 +64,7 @@ def getdatafeat(args, resize_size, data_list, model):
         batch_data = data_list[i:i+batch]
 
         # 创建当前批次的输入
-        input_list = [(transformer(d)).unsqueeze(0) for d in batch_data]
+        input_list = [(d).unsqueeze(0) for d in batch_data]
         batch_input = torch.cat(input_list).to(args.device)
         
         # 获取特征
@@ -264,7 +259,9 @@ def evalFuncBayes(policy, params):
     aug_data = []
     data = [data_list[i] for i in groups[group_id]]
     for d in data:
-        aug_data.append(aug(d))
+        d = (d*255).to(torch.uint8)
+        d = aug(d) / 255
+        aug_data.append(d)
     aug_feat, _ = getdatafeat(args,resize_size,aug_data,model)
     if args.gpu:
         aug_feat = torch.cat(aug_feat).detach()
@@ -358,7 +355,7 @@ def cluster_data(feat_list, label_list, n_clusters):
     centers = [np.mean(feat_list[groups[i]], axis=0) for i in range(n_clusters)]
     return groups, centers
 
-def cluster_data_weighted(feat_list, label_list, n_clusters):
+def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
     groups = []
     sample_num = int(feat_list.shape[0]/n_clusters)
     # sample_num = int(feat_list.shape[0] * 0.8)
@@ -369,21 +366,33 @@ def cluster_data_weighted(feat_list, label_list, n_clusters):
     weights = -np.log(feat_list[np.arange(feat_list.shape[0]),label_list]+1e-6)*np.sum(-feat_list * np.where(feat_list > 0, np.log(feat_list+1e-6), 0), axis=1)
     weights = np.nan_to_num(weights, nan=0.0, neginf=0)
     weights = weights / np.sum(weights)
-    mu = np.argwhere(np.cumsum(weights / np.sum(weights))-np.random.rand() <= 0)[-1]
-    mu = weights[mu]
-    weights = 1 / (np.sqrt(2 * np.pi)) * np.exp(- (weights - mu) ** 2 / 2)
-    weights = weights / np.sum(weights)
-    # _, idx = np.unique(label_list, return_index=True)
-    # weights = softmax(1 - softmax(feat_list, axis=1), axis=1)
-    # weights = [softmax(weights[idx[i], i]) for i in range(len(idx))]
-    # _, counts = np.unique(label_list, return_counts=True)
-    # counts = counts/np.sum(counts)
-    # sample_num = counts*sample_num
+    if diff_c:
+        mu = [np.argwhere(np.cumsum(weights / np.sum(weights))-np.random.rand() <= 0)[-1] for _ in range(sample_counts)]
+        mu = [weights[m] for m in mu]
+    else:
+        mu = [np.argwhere(np.cumsum(weights / np.sum(weights))-np.random.rand() <= 0)[-1]] * sample_counts
+        mu = [weights[m] for m in mu]
     groups = []
-    for _ in range(sample_counts):
+    for i in range(sample_counts):
+        w = 1 / (np.sqrt(2 * np.pi)) * np.exp(- (weights - mu[i]) ** 2 / 2)
+        w = w / np.sum(w)
+        # _, idx = np.unique(label_list, return_index=True)
+        # weights = softmax(1 - softmax(feat_list, axis=1), axis=1)
+        # weights = [softmax(weights[idx[i], i]) for i in range(len(idx))]
+        # _, counts = np.unique(label_list, return_counts=True)
+        # counts = counts/np.sum(counts)
+        # sample_num = counts*sample_num
         # groups.append(np.concatenate([np.random.choice(idx[i], int(sample_num[i]), p=weights[i]) for i in range(len(idx))]))
-        groups.append(np.random.choice(np.arange(label_list.shape[0]), int(sample_num), p=weights))
+        groups.append(np.random.choice(np.arange(label_list.shape[0]), int(sample_num), p=w))
     centers = [np.mean(feat_list[groups[i]], axis=0) for i in range(n_clusters)]
+    # 按与聚类中心的距离再次分组
+    distances = np.zeros((feat_list.shape[0], n_clusters))
+    for i in range(n_clusters):
+        distances[:, i] = np.linalg.norm(feat_list - centers[i], axis=1)
+
+    # 将每个样本分配到距离最近的聚类中心
+    nearest_cluster = np.argmin(distances, axis=1)
+    true_groups = [np.where(nearest_cluster == i)[0] for i in range(n_clusters)]
     # groups_weights = [np.sum(weights[groups[i]]) for i in range(len(groups))]
     # idx = np.argmax(groups_weights)
     # return groups[idx], centers
@@ -393,7 +402,7 @@ def cluster_data_weighted(feat_list, label_list, n_clusters):
     # ratio = len(intersection)/len(union)
     # return groups, centers, intersection, ratio
 
-    return groups, centers
+    return groups, centers, true_groups
 def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_bin=31, prob_bin=10, num_ops=2, max_samples=100):
     total_op_num = len(augmentation_space())
     sample_num = 500
@@ -412,7 +421,7 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
     # # groups = [np.unique(np.concatenate(groups))]
     # groups = [intersection]
     # centers = []
-    groups, centers = cluster_data_weighted(cls_list, label_list, n_clusters)
+    groups, centers, true_groups = cluster_data_weighted(cls_list, label_list, n_clusters, diff_c=args.diff_c)
     # groups = [group]
     centers = [] 
     # centers = np.mean(feat_list[groups[0]], axis=0)
@@ -514,7 +523,7 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
     options = {'popsize':30,'maxgen':2,'rmp':0.3,'reps':2,'proxy_update':10}
     currtime = datetime.datetime.now().strftime('%m-%d-%H-%M-%S')
     log_name = f'MFCAugment-{currtime}-{args.num_ops}'
-    writer = [SummaryWriter(log_dir=str(args.log_path.joinpath(args.save_name,log_name,f'task{x}'))) for x in range(len(tasks))]
+    writer = [SummaryWriter(log_dir=os.path.join(args.log_path,args.save_name,log_name,f'task{x}')) for x in range(len(tasks))]
     if args.multitask:
         if args.generative:
             if args.proxy:
@@ -540,7 +549,7 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
     # for i, p in enumerate(bestInd):
     #     writer[0].add_text('Best Ind', str(p), i)
     # raise NotImplementedError
-    return bestPolicy, groups
+    return bestPolicy, groups, true_groups
     
 def formatPolicy(param, bestPop, skillFactor=None,verbose=False):
     Ub = param['Ub']

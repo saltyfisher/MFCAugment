@@ -26,6 +26,7 @@ from torch import nn, optim
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
+from torchvision.transforms import ToPILImage
 from data import get_data
 from networks import get_model, num_class
 from utils import initialize_setting
@@ -49,15 +50,28 @@ def to_one_hot(inp, num_classes, device='cuda'):
     y_onehot.scatter_(1, inp.unsqueeze(1), 1)
     return y_onehot
 
-def run_epoch(model, loader, loss_fn, optimizer):
+def run_epoch(model, loader, loss_fn, optimizer, policy, groups, args):
     cnt = 0
     steps = 0
     device = next(model.parameters()).device
     train_loss = 0.0
     all_labels = []
     all_preds = []
+    aug_data = []
     for batch in loader:
-        data, label = batch[:2]
+        if groups == []:
+            data, label = batch[:2]
+        else:
+            for data, label, data_idx in zip(*batch):
+                if args.group:
+                    p_idx = groups.get(data_idx, 0)
+                else:
+                    p_idx = np.random.randint(0, len(policy))
+                aug_data.append(policy[p_idx](ToPILImage()(data)))
+            aug_data = torch.stack(aug_data)
+            data = aug_data
+            label = batch[1]
+
         steps += 1
         data = data.to(device) 
         label = label.to(device)
@@ -112,14 +126,17 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
 
     traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, persistent_workers=True)
     testloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, persistent_workers=True)
-    data_list, label_list = traintest_dataset.get_all_files()
+    transformer = transforms.Compose([transforms.Resize(resize_size), transforms.ToTensor()])
+    data_list, label_list = traintest_dataset.get_all_files(transformer)
 
     policy = []
     policy_subset = []
+    optimal_policy = []
+    idx_to_group = []
     for epoch in range(epoch_start, max_epoch+1):
         model.train()    
         st = time.time() 
-        metrics = run_epoch(model, traintestloader, criterion, optimizer)
+        metrics = run_epoch(model, traintestloader, criterion, optimizer, optimal_policy, idx_to_group, args)
         # print('time elapsed: %.2f' % (time.time()-st))
         rs['train'].append(metrics)
         loss = metrics['loss']
@@ -132,7 +149,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
         if (save_path is not None):
             with torch.no_grad():
                 metrics = run_epoch(model, testloader
-                , criterion, None)
+                , criterion, None, [], [], [])
                 rs['test'].append(metrics)
                 print(f'Epoch [{epoch}/{max_epoch}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
             if rs['test'][-1]['f1'] > best_f1:
@@ -168,16 +185,17 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             else:
                 cluster_num = 4
             # cluster_num = 3
-            policy_subset, groups = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops)
+            policy_subset, groups, true_group = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops)
+            idx_to_group = {}
+            for group_idx, group_members in enumerate(groups):
+                for idx in group_members:
+                    idx_to_group[idx] = group_idx
             if policy_subset == []:
                 continue
             if args.resize:
-                    optimal_policy = [torchvision.transforms.Compose([transforms.Resize(resize_size),MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops),
-                                                        transforms.ToTensor()]) for p in policy_subset]
+                optimal_policy = [torchvision.transforms.Compose([transforms.Resize(resize_size),MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops), transforms.ToTensor()]) for p in policy_subset]
             else:
-                optimal_policy = [torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops),
-                                                        transforms.Resize(resize_size),
-                                                        transforms.ToTensor()]) for p in policy_subset]
+                optimal_policy = [torchvision.transforms.Compose([MyAugment(p,mag_bin=args.mag_bin,prob_bin=args.prob_bin,num_ops=args.num_ops), transforms.Resize(resize_size),transforms.ToTensor()]) for p in policy_subset]
             if args.group:
                 g = [0]*len(traintest_dataset)
                 for groups_idx, ind_idx in enumerate(groups):
@@ -187,9 +205,6 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             else:
                 groups = np.unique(np.concatenate(groups))
             policy.append(policy_subset)
-            traintest_dataset.update_transform(optimal_policy, transform_train, groups)
-            traintestloader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-            testloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     # 输出本次训练的最优结果
     if best_metrics is not None:
@@ -236,7 +251,7 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', action='store_true', help='是否在显存上进行计算')
     parser.add_argument('--pretrain', action='store_true', help='是否使用预训练权重')
     parser.add_argument('--test_all', action='store_true', help='是否测试所有方法')
-    parser.add_argument('--resize', action='store_true', help='搜索增广策略时是否缩放')
+    parser.add_argument('--resize', action='store_false', help='搜索增广策略时是否缩放')
     parser.add_argument('--mfc', action='store_true', help='是否优化增广策略') 
     parser.add_argument('--online', action='store_true', help='是否在线优化增广策略') 
     parser.add_argument('--proxy', action='store_true', help='是否使用代理') 
@@ -250,6 +265,7 @@ if __name__ == '__main__':
     parser.add_argument('--bayes_topk', type=int, default=100, help='贝叶斯优化返回的策略数')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数') 
     parser.add_argument('--group', action='store_true', help='每个数据子集是否单独适配增广策略') 
+    parser.add_argument('--diff_c', action='store_true', help='每个数据子集的中心点是否不同') 
     parser.add_argument('--l', type=int, default=1, help='目标函数权重')
     parser.add_argument('--mag_bin', type=int, default=31, help='变换操作强度离散个数')
     parser.add_argument('--prob_bin', type=int, default=10, help='变换概率离散个数')

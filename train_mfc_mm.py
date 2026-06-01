@@ -146,12 +146,13 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
     policy_subset = []
     aug_mm = []
     groups = []
+    true_group = []
     all_policy_subset = []
     for epoch in range(epoch_start, max_epoch+1):
     # for epoch in range(epoch_start, 2):
         model.train()    
         st = time.time() 
-        metrics = run_epoch(model, traintestloader, criterion, optimizer, aug_mm, groups, matting_method)
+        metrics = run_epoch(model, traintestloader, criterion, optimizer, aug_mm, true_group, matting_method)
         # print('time elapsed: %.2f' % (time.time()-st))
         rs['train'].append(metrics)
         loss = metrics['loss']
@@ -198,7 +199,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
             if args.matting:
                 policy_subset, groups = MFCAugmentMM(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops, matting_method=matting_method)
             else:
-                policy_subset, groups = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops, matting_method=matting_method)
+                policy_subset, groups, true_group = MFCAugment(model, resize_size, data_list, label_list, args, n_clusters=cluster_num, num_ops=args.num_ops)
             if policy_subset == []:
                 continue
             all_policy_subset.append(policy_subset)
@@ -214,7 +215,6 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 groups = g
             else:
                 groups = np.unique(np.concatenate(groups))
-            policy.append(policy_subset)
 
     # 输出本次训练的最优结果
     if best_metrics is not None:
@@ -275,6 +275,7 @@ if __name__ == '__main__':
     parser.add_argument('--bayes_topk', type=int, default=100, help='贝叶斯优化返回的策略数')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数') 
     parser.add_argument('--group', action='store_true', help='每个数据子集是否单独适配增广策略') 
+    parser.add_argument('--diff_c', action='store_true', help='每个数据子集的中心点是否不同') 
     parser.add_argument('--l', type=int, default=1, help='目标函数权重')
     parser.add_argument('--mag_bin', type=int, default=31, help='变换操作强度离散个数')
     parser.add_argument('--prob_bin', type=int, default=10, help='变换概率离散个数')

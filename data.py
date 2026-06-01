@@ -28,23 +28,15 @@ class Mydata(torchvision.datasets.ImageFolder):
     def __getitem__(self, index):
         path, target = self.samples[index]
         sample = self.loader(path)
-        if hasattr(self, 'groups'):
-            if index in self.groups:
-                transform_idx = np.random.randint(0, len(self.mfc_transform))
-                sample = self.mfc_transform[transform_idx](sample)
-                # sample = self.mfc_transform[0](sample)
-            else:
-                sample = self.transform(sample)
-        else:
-            if self.transform is not None:
-                sample = self.transform(sample)
+        if self.transform is not None:
+            sample = self.transform(sample)
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        return sample, target
+        return sample, target, index
 
-    def get_all_files(self):
-        data_list = [self.loader(path) for path, target in self.samples]
+    def get_all_files(self, transformer):
+        data_list = [transformer(self.loader(path)) for path, target in self.samples]
         label_list = self.targets
         return data_list, label_list
     
@@ -60,21 +52,15 @@ class Mydatasubset(Subset):
     def __getitem__(self, index):
         path, target = self.dataset.samples[self.indices[index]]
         sample = self.dataset.loader(path)
-        if hasattr(self, 'groups'):
-            if index in self.groups:
-                sample = self.mfc_transform[0](sample)
-            else:
-                sample = self.transform(sample)
-        else:
-            if self.transform is not None:
-                sample = self.transform(sample)
+        if self.transform is not None:
+            sample = self.transform(sample)
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        return sample, target
+        return sample, target, self.indices[index]
 
-    def get_all_files(self):
-        data_list = [self.dataset.loader(self.dataset.samples[i][0]) for i in self.indices]
+    def get_all_files(self, transformer):
+        data_list = [transformer(self.dataset.loader(self.dataset.samples[i][0])) for i in self.indices]
         label_list = [self.dataset.targets[i] for i in self.indices]
         return data_list, label_list
     
