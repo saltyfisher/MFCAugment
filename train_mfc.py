@@ -31,6 +31,13 @@ class OutputConfig:
     save_name: str
 
 
+def sample_ratio(value):
+    ratio = float(value)
+    if not 0.0 < ratio < 1.0:
+        raise argparse.ArgumentTypeError('sample ratio must be greater than 0 and less than 1')
+    return ratio
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description='Medical Image Classification with UncertaintyMixup')
     parser.add_argument('--data_dir', type=str, default='/workspace/MedicalImageClassficationData/',
@@ -67,8 +74,8 @@ def build_parser():
     parser.add_argument('--bayes_max_eval', type=int, default=200, help='贝叶斯优化最大迭代次数')
     parser.add_argument('--bayes_topk', type=int, default=100, help='贝叶斯优化返回的策略数')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数')
-    parser.add_argument('--mfc_eval_sample_size', type=int, default=0,
-                        help='Bayes搜索阶段每个子集使用的代表样本数，0表示使用全部样本')
+    parser.add_argument('--mfc_eval_sample_ratio', type=sample_ratio, default=0.2,
+                        help='Bayes搜索阶段每个子集使用的代表样本比例，取值范围为(0, 1)')
     parser.add_argument('--group', action='store_true', help='每个数据子集是否单独适配增广策略')
     parser.add_argument('--diff_c', action='store_true', help='每个数据子集的中心点是否不同')
     parser.add_argument('--l', type=int, default=1, help='目标函数权重')

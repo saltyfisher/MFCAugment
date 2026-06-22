@@ -72,14 +72,22 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     assert args.num_ops == 2
     assert args.resize is True
     assert args.mfc is False
-    assert args.mfc_eval_sample_size == 0
+    assert args.mfc_eval_sample_ratio == pytest.approx(0.2)
 
 
-def test_parser_accepts_mfc_eval_sample_size(train_mfc):
+def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
     parser = train_mfc.build_parser()
-    args = parser.parse_args(["--mfc_eval_sample_size", "128"])
+    args = parser.parse_args(["--mfc_eval_sample_ratio", "0.25"])
 
-    assert args.mfc_eval_sample_size == 128
+    assert args.mfc_eval_sample_ratio == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("ratio", ["0", "1", "1.2", "-0.1"])
+def test_parser_rejects_invalid_mfc_eval_sample_ratio(train_mfc, ratio):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--mfc_eval_sample_ratio", ratio])
 
 
 @pytest.mark.parametrize(

@@ -111,7 +111,7 @@ def test_representative_group_indices_keep_small_groups_complete():
     sampled_groups = mfc.build_representative_groups(
         feat_list,
         groups,
-        sample_size=10,
+        sample_ratio=0.99,
     )
 
     assert len(sampled_groups) == 1
@@ -125,7 +125,7 @@ def test_representative_group_indices_mix_center_middle_and_boundary():
     sampled_groups = mfc.build_representative_groups(
         feat_list,
         groups,
-        sample_size=5,
+        sample_ratio=0.5,
     )
 
     assert len(sampled_groups[0]) == 5
@@ -133,7 +133,7 @@ def test_representative_group_indices_mix_center_middle_and_boundary():
 
 
 def test_build_mfc_params_includes_representative_groups_when_requested():
-    args = SimpleNamespace(batch_size=8, mfc_eval_sample_size=5)
+    args = SimpleNamespace(batch_size=8, mfc_eval_sample_ratio=0.5)
     groups = [np.arange(10)]
     params = mfc.build_mfc_params(
         model="model",

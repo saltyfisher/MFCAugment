@@ -440,9 +440,13 @@ def select_unique_ranked_indices(candidate_indices, selected, quota):
     return output
 
 
-def representative_group_indices(feat_list, group_indices, sample_size):
+def representative_group_indices(feat_list, group_indices, sample_ratio):
     group_indices = np.asarray(group_indices)
-    if sample_size is None or sample_size <= 0 or len(group_indices) <= sample_size:
+    if not 0.0 < sample_ratio < 1.0:
+        raise ValueError('sample_ratio must be greater than 0 and less than 1')
+
+    sample_size = max(1, int(np.ceil(len(group_indices) * sample_ratio)))
+    if len(group_indices) <= sample_size:
         return group_indices.copy()
 
     features = to_numpy_features(feat_list)[group_indices]
@@ -472,8 +476,8 @@ def representative_group_indices(feat_list, group_indices, sample_size):
     return group_indices[np.array(chosen_positions)]
 
 
-def build_representative_groups(feat_list, groups, sample_size):
-    return [representative_group_indices(feat_list, group, sample_size) for group in groups]
+def build_representative_groups(feat_list, groups, sample_ratio):
+    return [representative_group_indices(feat_list, group, sample_ratio) for group in groups]
 
 
 def build_search_bounds(total_op_num, num_ops, mag_bin, prob_bin, use_prob):
@@ -507,8 +511,8 @@ def build_mfc_params(
     mag_bin,
     prob_bin,
 ):
-    eval_sample_size = getattr(args, 'mfc_eval_sample_size', 0)
-    eval_groups = build_representative_groups(feat_list, groups, eval_sample_size)
+    eval_sample_ratio = getattr(args, 'mfc_eval_sample_ratio', 0.2)
+    eval_groups = build_representative_groups(feat_list, groups, eval_sample_ratio)
     return {
         'feat_extractor': model,
         'data_list': data_list,
