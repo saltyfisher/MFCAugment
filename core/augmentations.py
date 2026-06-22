@@ -1,110 +1,46 @@
 import math
-import random
 import numpy as np
-import cv2
-import PIL
-from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torchvision.transforms.autoaugment import RandAugment, TrivialAugmentWide, AugMix
 from torchvision.transforms import functional as F, InterpolationMode
-from PIL import Image
-from core.utils import trimap_generate
-from torchvision.transforms import _functional_tensor as F_t
 
-def generate_saliency_map(img):
-    """
-    生成图像的显著性图
-    
-    Args:
-        image: 输入图像 (C, H, W)
-    
-    Returns:
-        saliency_map: 显著性图 (H, W)
-    """
-   
-    sailency = cv2.saliency.StaticSaliencySpectralResidual_create()
-    _, saliency_map = sailency.computeSaliency(img)
-    # 归一化到0-1范围
-    if saliency_map.max() > 0:
-        saliency_map = saliency_map / saliency_map.max()
-    
-    return saliency_map
 
-def MM(img, superpixel_num, trimap_alpha, matting_method):
+DEFAULT_IMAGE_SIZE = (320, 320)
+
+
+def _prepare_fill(img: Tensor, fill: Optional[List[float]]):
+    channels, height, width = F.get_dimensions(img)
     if isinstance(img, Tensor):
-        img = img.cpu().numpy()
-    if isinstance(img, PIL.Image.Image):
-        img = np.array(img)
-    superpixel_num = int(np.round(100*superpixel_num))
-    # trimap_alpha = np.round(100*trimap_alpha)
-    # img = np.transpose(img, (1, 2, 0))
-    img = (img * 255).astype(np.uint8)
-    w, h, c = img.shape
-    m_size = 64
-    device = next(matting_method.parameters()).device
-    # 超像素分割
-    cluster = cv2.ximgproc.createSuperpixelSEEDS(
-        h, w, c, 
-        superpixel_num,
-        num_levels=4 
-    )        
-    cluster.iterate(img, 4)
-    segement = cluster.getLabels()
-    # 显著图计算
-    saliency_map = generate_saliency_map(img)
-    # 选择超像素块
-    unique_labels = np.unique(segement)
-    weights = []
-    for label in unique_labels:
-        mask = segement == label
-        weight = np.sum(saliency_map[mask])
-        weights.append(weight)
-    
-    # 归一化权重
-    weights = np.array(weights)
-    if np.sum(weights) > 0:
-        weights = weights / np.sum(weights)
-    else:
-        # 如果所有权重都为0，使用均匀分布
-        weights = np.ones_like(weights) / len(weights)
-    
-    # 根据权重随机选择超像素块
-    selected_label = np.random.choice(unique_labels, p=weights)
-    mask = segement == selected_label
-    rows = np.where(mask.any(axis=1))[0]
-    cols = np.where(mask.any(axis=0))[0]
-    min_row, max_row = rows.min(), rows.max()
-    min_col, max_col = cols.min(), cols.max()
-    cropped_region = img[min_row:max_row, min_col:max_col]
-    # 获取抠图遮罩
-    cropped_region = cv2.resize(cropped_region, (m_size, m_size), interpolation=cv2.INTER_CUBIC)
-    cropped_saliency_map = generate_saliency_map(cropped_region)
-    matting_input = torch.zeros(1, 4, m_size, m_size)
-    matting_input[0, :c] = torch.from_numpy(cropped_region.transpose(2, 0, 1) / 255.)
-    trimap = trimap_generate(cropped_region, cropped_saliency_map, trimap_alpha_threshold=trimap_alpha,trimap_gen='stats')
-    trimap = trimap[np.newaxis, :, :]
-    matting_input[0,:3] = torch.from_numpy(trimap/255.).to(device)
-    with torch.no_grad():
-        refined_mask = matting_method(matting_input.to(device))
-    refined_mask = refined_mask.cpu().numpy()
-    refined_mask[trimap == 0] = 0.0
-    refined_mask[trimap == 255] = 1.0
-    refined_mask = refined_mask * 255
-    refined_mask = refined_mask.astype(np.uint8)
-    ratio = (superpixel_num/100.)*np.sum(refined_mask/255.)/(refined_mask.shape[1]*refined_mask.shape[2])
-    mask = np.zeros((w, h))
-    refined_mask = refined_mask.squeeze()
-    mask[min_row:max_row, min_col:max_col] = cv2.resize(refined_mask, (max_col-min_col, max_row-min_row), interpolation=cv2.INTER_CUBIC)
-    mask = mask/255.
-    mask = np.expand_dims(mask, axis=2)
-    fg = img * mask
-    cropped_fg = fg[min_row:max_row, min_col:max_col]
-    pos = (min_row, max_row, min_col, max_col)
-    return fg, cropped_fg, pos, mask, ratio
+        if isinstance(fill, (int, float)):
+            fill = [float(fill)] * channels
+        elif fill is not None:
+            fill = [float(f) for f in fill]
+    return fill, height, width
 
+
+def _maybe_negate(magnitude: float, signed: bool) -> float:
+    if signed and bool(torch.randint(2, (1,)).item()):
+        return -magnitude
+    return magnitude
+
+
+def _policy_values_present(values) -> bool:
+    if values is None:
+        return False
+    if isinstance(values, list):
+        return len(values) > 0
+    if hasattr(values, "size"):
+        return values.size > 0
+    return True
+
+
+def _sample_policy_values(values, index):
+    candidates = values[index]
+    if len(candidates.shape) < 2:
+        candidates = candidates[np.newaxis]
+    return candidates[np.random.randint(candidates.shape[0])]
 
 def _apply_op(
     img: Tensor, op_name: str, magnitude: float, interpolation: InterpolationMode, fill: Optional[List[float]]
@@ -265,7 +201,11 @@ def _apply_op_mm(
         raise ValueError(f"The provided operator {op_name} is not recognized.")
     return img, affine_matrix
 
-def augmentation_space(mag_bins: int=31, prob_bins: int=10, image_size: Tuple[int, int]=[320,320]) -> Dict[str, Tuple[Tensor, Tensor, bool]]:
+def augmentation_space(
+    mag_bins: int = 31,
+    prob_bins: int = 10,
+    image_size: Tuple[int, int] = DEFAULT_IMAGE_SIZE,
+) -> Dict[str, Tuple[Tensor, Tensor, bool]]:
     return {
         # 坐标空间操作
         "Identity": (torch.tensor(0.0), torch.linspace(0.0, 1, prob_bins), False),
@@ -345,22 +285,16 @@ class MyRandAugment(torch.nn.Module):
         Returns:
             PIL Image or Tensor: Transformed image.
         """
-        fill = self.fill
-        channels, height, width = F.get_dimensions(img)
-        if isinstance(img, Tensor):
-            if isinstance(fill, (int, float)):
-                fill = [float(fill)] * channels
-            elif fill is not None:
-                fill = [float(f) for f in fill]
+        fill, height, width = _prepare_fill(img, self.fill)
 
         op_meta = augmentation_space(mag_bins=self.num_magnitude_bins, image_size=(height, width))
+        op_names = list(op_meta.keys())
         for _ in range(self.num_ops):
             op_index = int(torch.randint(len(op_meta), (1,)).item())
-            op_name = list(op_meta.keys())[op_index]
+            op_name = op_names[op_index]
             magnitudes, _, signed = op_meta[op_name]
             magnitude = float(magnitudes[self.magnitude].item()) if magnitudes.ndim > 0 else 0.0
-            if signed and torch.randint(2, (1,)):
-                magnitude *= -1.0
+            magnitude = _maybe_negate(magnitude, signed)
             img = _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
 
         return img
@@ -431,13 +365,7 @@ class MyTrivialAugmentWide(torch.nn.Module):
         Returns:
             PIL Image or Tensor: Transformed image.
         """
-        fill = self.fill
-        channels, height, width = F.get_dimensions(img)
-        if isinstance(img, Tensor):
-            if isinstance(fill, (int, float)):
-                fill = [float(fill)] * channels
-            elif fill is not None:
-                fill = [float(f) for f in fill]
+        fill, height, width = _prepare_fill(img, self.fill)
 
         op_meta = augmentation_space(self.num_magnitude_bins, image_size=(height, width))
         op_index = int(torch.randint(len(op_meta), (1,)).item())
@@ -448,8 +376,7 @@ class MyTrivialAugmentWide(torch.nn.Module):
             if magnitudes.ndim > 0
             else 0.0
         )
-        if signed and torch.randint(2, (1,)):
-            magnitude *= -1.0
+        magnitude = _maybe_negate(magnitude, signed)
 
         return _apply_op(img, op_name, magnitude, interpolation=self.interpolation, fill=fill)
 
@@ -519,13 +446,7 @@ class MyAugment(torch.nn.Module):
         Returns:
             PIL Image or Tensor: Transformed image.
         """
-        fill = self.fill
-        channels, height, width = F.get_dimensions(img)
-        if isinstance(img, Tensor):
-            if isinstance(fill, (int, float)):
-                fill = [float(fill)] * channels
-            elif fill is not None:
-                fill = [float(f) for f in fill]
+        fill, height, width = _prepare_fill(img, self.fill)
 
         aug_space = augmentation_space(self.mag_bin, self.prob_bin, (height, width))
         # for p in self.policy:
@@ -552,18 +473,14 @@ class MyAugment(torch.nn.Module):
         all_ops = self.policy['op_index']
         idx = np.random.randint(len(all_ops))
         ops = all_ops[idx].tolist()
-        all_magnitude = self.policy['magnitude_index'][idx]
-        if len(all_magnitude.shape) < 2:
-            all_magnitude = all_magnitude[np.newaxis]
-        magnitude = all_magnitude[np.random.randint(all_magnitude.shape[0])]
-        if self.policy['prob_index'] != []:
-            all_prob = self.policy['prob_index'][idx]
-            if len(all_prob.shape) < 2:
-                all_prob = all_prob[np.newaxis]
-            prob = all_prob[np.random.randint(all_prob.shape[0])]
+        magnitude = _sample_policy_values(self.policy['magnitude_index'], idx)
+        prob_policy = self.policy.get('prob_index', [])
+        prob_indices = _sample_policy_values(prob_policy, idx) if _policy_values_present(prob_policy) else None
+        op_names = list(aug_space.keys())
+
         for i, p in enumerate(ops):
-            op_name = list(aug_space.keys())[int(p)]
-            magnitudes, prob, signed = aug_space[op_name]
+            op_name = op_names[int(p)]
+            magnitudes, probabilities, signed = aug_space[op_name]
             magnitude_index = int(magnitude[i])
             if magnitudes.ndim > 0:
                 # magnitudes = magnitudes[:magnitude_index+1]
@@ -572,144 +489,17 @@ class MyAugment(torch.nn.Module):
             else:
                 m = 0.0
                 # magnitude = float(magnitudes[magnitude_index].item())
-            if signed and torch.randint(2, (1,)):
-                m *= -1.0
-            try:
-                prob_index = int(prob[i])
-                p = float(prob[prob_index].item())
-                if torch.randn(1) < p:
-                    img = _apply_op(img, op_name, m, interpolation=self.interpolation, fill=fill)
-            except:
+            m = _maybe_negate(m, signed)
+
+            should_apply = True
+            if prob_indices is not None:
+                prob_index = int(prob_indices[i])
+                probability = float(probabilities[prob_index].item())
+                should_apply = bool((torch.randn(1) < probability).item())
+
+            if should_apply:
                 img = _apply_op(img, op_name, m, interpolation=self.interpolation, fill=fill)
         if self.resize:
             img = F.resize(img, self.resize_size)
 
         return img
-
-class MyAugmentMM(torch.nn.Module):
-    def __init__(
-        self,
-        policy,
-        mag_neigbor_range : int = 1,
-        num_ops: int = 2,
-        magnitude: int = 9,
-        mag_bin: int = 31,
-        prob_bin: int = 10,
-        interpolation: InterpolationMode = InterpolationMode.NEAREST,
-        fill: Optional[List[float]] = None,
-        resize = False,
-        resize_size = None,
-        post_augment = True
-    ) -> None:
-        super().__init__()
-        self.mag_bin = mag_bin
-        self.prob_bin = prob_bin
-        self.interpolation = interpolation
-        self.fill = fill
-        self.num_ops = num_ops
-        # self.policy = torch.t(torch.tensor(policy).reshape(-1,num_ops))
-        self.policy = policy
-        self.mag_neighbor_range = mag_neigbor_range
-        self.magnitude = magnitude
-        self.resize = resize
-        self.resize_size = resize_size
-        self.post_augment = post_augment
-
-    def get_policy(self, policy):
-        self.policy = policy
-    
-    def forward(self, img: Tensor, matting_method) -> Tensor:
-        """
-            img (PIL Image or Tensor): Image to be transformed.
-
-        Returns:
-            PIL Image or Tensor: Transformed image.
-        """
-        fill = self.fill
-        channels, height, width = F.get_dimensions(img)
-        if isinstance(img, Tensor):
-            if isinstance(fill, (int, float)):
-                fill = [float(fill)] * channels
-            elif fill is not None:
-                fill = [float(f) for f in fill]
-
-        aug_space = augmentation_space(self.mag_bin, self.prob_bin, (height, width))
-        img, mask, ratio = self.augment_img(img, aug_space, fill, matting_method)
-        return img, mask, ratio
-    
-    def augment_img(self, img, aug_space, fill, matting_method):
-        # 取出MM的参数
-        # self.policy['op_index'] = self.policy['op_index'][1:]
-        # all_superpixel_num = self.policy['magnitude_index'][0]
-        # all_trimap_alpha = self.policy['prob_index'][0]
-        # superpixel_num = all_superpixel_num[np.random.randint(all_superpixel_num.shape[0])]
-        # trimap_alpha = all_trimap_alpha[np.random.randint(all_trimap_alpha.shape[0])]
-        
-        # mask = torch.from_numpy(mask)
-        img = img.permute(1, 2, 0)
-        geo_trans = []
-        all_ops = self.policy['op_index']
-        mask = []
-        if all_ops.shape == ():
-            all_ops = [all_ops[np.newaxis]]
-        idx = np.random.randint(len(all_ops))
-        ops = all_ops[idx].tolist()
-        all_magnitude = self.policy['magnitude_index'][idx]
-        if len(all_magnitude.shape) < 2:
-            all_magnitude = all_magnitude[np.newaxis]
-        magnitude = all_magnitude[np.random.randint(all_magnitude.shape[0])]
-        if len(self.policy['prob_index']) > 0:
-            all_prob = self.policy['prob_index'][idx]
-            if len(all_prob.shape) < 2:
-                all_prob = all_prob[np.newaxis]
-            prob = all_prob[np.random.randint(all_prob.shape[0])]
-        affine_matrix = []
-        for i, p in enumerate(ops):
-            if p == 100:
-                superpixel_num = magnitude[i]
-                trimap_alpha = prob[i]
-                fg, cropped_fg, pos, mask, ratio = MM(img, 
-                                    superpixel_num=superpixel_num,
-                                    trimap_alpha=trimap_alpha,
-                                    matting_method=matting_method
-                                    )
-                mask = torch.FloatTensor(mask).permute(2, 0, 1)
-                img = img.permute(2, 0, 1).to(torch.uint8)
-            else:
-                # p = 11
-                if self.post_augment:
-                    signed = False
-                    op_name = list(aug_space.keys())[int(p)]
-                    magnitudes, probs, signed = aug_space[op_name]
-                    magnitude_index = int(magnitude[i])
-                    if magnitudes.ndim > 0:
-                        # magnitudes = magnitudes[:magnitude_index+1]
-                        # m = float(magnitudes[random.randint(0, magnitudes.shape[0]-1)].item())
-                        m = float(magnitudes[magnitude_index].item())
-                    else:
-                        m = 0.0
-                        # magnitude = float(magnitudes[magnitude_index].item())
-                    if signed and torch.randint(2, (1,)):
-                        m *= -1.0
-                    if i+1 <= len(prob):
-                        prob_index = int(prob[i])
-                        p = float(prob[prob_index].item())
-                        if torch.randn(1) < p:
-                            img, affine_matrix = _apply_op_mm(img, op_name, m, interpolation=self.interpolation, fill=fill)
-                    else:
-                        img, affine_matrix = _apply_op_mm(img, op_name, m, interpolation=self.interpolation, fill=fill)
-                    if affine_matrix != []:
-                        geo_trans.append([op_name, affine_matrix])
-        if geo_trans != [] and self.post_augment and mask != []:
-            for op_name, affine_matrix in geo_trans:
-                if op_name == 'Rotate':
-                    mask = F_t.rotate(mask, matrix=affine_matrix)
-                else:
-                    mask = F_t.affine(mask, matrix=affine_matrix)
-
-        if self.resize:
-            img = F.resize(img, self.resize_size)
-        if mask != []:
-            mask = mask.to(img.device)
-            img = img * mask
-        return img, mask, ratio

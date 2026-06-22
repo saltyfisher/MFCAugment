@@ -1,16 +1,22 @@
+import importlib
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F   
-import torch.distributions as distributions 
-import numpy as np
-import gco
-import cv2
 
-from scipy.spatial.distance import cosine
 from scipy.stats import gaussian_kde
-from scipy.integrate import quad
 from scipy.ndimage import convolve1d
+
+
+def _require_module(module_name):
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ImportError(
+            f"{module_name} is required for this code path. "
+            f"Install it before using this function."
+        ) from exc
 
 def get_deepfeat(args, model, img):
     model_name = args.model
@@ -706,6 +712,7 @@ def trimap_generate(input,
                 mp=None,):
     
     if trimap_gen == 'graph':
+        gco = _require_module("gco")
         large_val_pairwise = 10
         large_val_unary = 100
         h, w, c = input.shape
@@ -764,6 +771,7 @@ def trimap_generate(input,
         mask[mask == 1] = 128
         mask[mask == 2] = 0
     elif trimap_gen == 'stats':
+        cv2 = _require_module("cv2")
         mask = saliency.copy()
         _, mask1 = cv2.threshold((saliency*255).astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         t_bg = np.quantile(saliency, trimap_alpha_threshold)
@@ -772,6 +780,8 @@ def trimap_generate(input,
         mask[mask>=t_fg] = 1
         mask[(mask>t_bg)&(mask<t_fg)] = 0.5
         mask = (mask * 255).astype(np.uint8)
+    else:
+        raise ValueError(f"Unsupported trimap_gen: {trimap_gen}")
     # if mp is None:
     #     mask = []
     #     for i in range(b):

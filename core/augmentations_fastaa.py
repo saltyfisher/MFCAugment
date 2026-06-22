@@ -5,7 +5,6 @@ import random
 import PIL, PIL.ImageOps, PIL.ImageEnhance, PIL.ImageDraw
 import numpy as np
 import torch
-from torchvision.transforms.transforms import Compose
 
 random_mirror = True
 
@@ -195,17 +194,75 @@ def augment_list():  # 16 oeprations and their ranges
     return l
 
 
+def build_augment_registry():
+    return {fn.__name__: (fn, low, high) for fn, low, high in augment_list()}
 
-augment_dict = {fn.__name__: (fn, v1, v2) for fn, v1, v2 in augment_list()}
+
+AUGMENT_REGISTRY = build_augment_registry()
+augment_dict = AUGMENT_REGISTRY
 
 
 def get_augment(name):
-    return augment_dict[name]
+    return AUGMENT_REGISTRY[name]
+
+
+def scale_level(level, low, high):
+    return level * (high - low) + low
 
 
 def apply_augment(img, name, level):
     augment_fn, low, high = get_augment(name)
-    return augment_fn(img.copy(), level * (high - low) + low)
+    return augment_fn(img.copy(), scale_level(level, low, high))
+
+
+def policy_decoder(augment, num_policy, num_op):
+    op_list = augment_list()
+    policies = []
+    for i in range(num_policy):
+        ops = []
+        for j in range(num_op):
+            op_idx = augment[f"policy_{i}_{j}"]
+            op_prob = augment[f"prob_{i}_{j}"]
+            op_level = augment[f"level_{i}_{j}"]
+            ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
+        policies.append(ops)
+    return policies
+
+
+def remove_deplicates(policies):
+    seen = set()
+    unique_policies = []
+    for ops in policies:
+        key = "_".join(op[0] for op in ops)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_policies.append(ops)
+    return unique_policies
+
+
+class Augmentation(object):
+    def __init__(self, policies, augmentations=None):
+        self.policies = policies
+        self.augmentations = dict(AUGMENT_REGISTRY if augmentations is None else augmentations)
+
+    def get_augment(self, name):
+        return self.augmentations[name]
+
+    def apply_augment(self, img, name, level):
+        augment_fn, low, high = self.get_augment(name)
+        return augment_fn(img.copy(), scale_level(level, low, high))
+
+    def __call__(self, img):
+        if not self.policies:
+            return img
+
+        policy = random.choice(self.policies)
+        for name, probability, level in policy:
+            if random.random() > probability:
+                continue
+            img = self.apply_augment(img, name, level)
+        return img
 
 
 class Lighting(object):

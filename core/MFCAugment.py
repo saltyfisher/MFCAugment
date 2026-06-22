@@ -1,55 +1,20 @@
 import numpy as np
 import os
-import random
-import copy
 import time
-import cv2
-import multiprocessing as mp
 import torch
-import time
 import joblib
-import cvxpy as cp
-import pyDOE3
 import pickle
 import datetime
-import matplotlib.pyplot as plt
-# import geatpy as ea
-import kornia.augmentation as K
-from functools import reduce
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from tensorboardX import SummaryWriter
-from torch_pca import PCA as PCA_torch
-from tqdm import tqdm
-from torchvision.transforms import transforms, ToTensor
-from torch.utils.data import Dataset, DataLoader
-from itertools import chain
-from PIL import Image
-from core.FeatureExtractor import FeatureExtractor
-from core.augmentations import MyAugment, augmentation_space
-from core.utils import KL_loss_all, KL_loss, Jensen_loss, Sinkhorn_dist, kl_divergence_kde, kl_divergence_multivariate_torch
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from sklearn.mixture import GaussianMixture
-from sklearn.cluster import KMeans
-from sklearn.model_selection import StratifiedShuffleSplit, StratifiedKFold
-from sklearn.decomposition import PCA, KernelPCA
-from sklearn.manifold import TSNE
-from sklearn.metrics import pairwise_distances
-from scipy.spatial import distance
-from scipy.optimize import linear_sum_assignment
-from scipy.special import softmax
-from EA.SBX import SBX
-from EA.MFSBX  import MFSBX
-from EA.MFPSO import MFPSO
-from EA.GDMFPSO import GDMFPSO
-from EA.GDPMFPSO import GDPMFPSO
-from dataclasses import dataclass
-from core.utils import get_deepfeat, get_clsprob
-from core.model import Proxy, RBFNetwork, G_D
-from core.trainer_GD import train_GD, test_GD
-from core.trainer_proxy import train_proxy, test_proxy
-# from core.dataCluster import constrained_kmeans_ilp
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from sklearn.model_selection import StratifiedShuffleSplit
+
+
+logging.getLogger('hyperopt').setLevel(logging.WARNING)
 
 def getdatafeat(args, resize_size, data_list, model):
+    from core.utils import get_deepfeat
+
     # model = torch.nn.DataParallel(model)
     st = time.time()
     if args.resize:
@@ -92,10 +57,19 @@ class SingleTask(object):
         params.update({'Lb':self.Lb,'Ub':self.Ub})
         return self.evalfnc(x, params)
 
+
+def load_policy_eval_dependencies():
+    from core.augmentations import MyAugment
+    from core.utils import KL_loss, kl_divergence_multivariate_torch
+
+    return MyAugment, KL_loss, kl_divergence_multivariate_torch
+
+
 def process_policy(args_tuple):
     """
     处理单个增强策略的函数
     """
+    MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
     p, data, args, num_ops, resize_size, model, pca, feat_list, groups, group_id = args_tuple
     
     aug = MyAugment(p, num_ops)
@@ -172,6 +146,8 @@ def evalFuncBatch(policies, params):
     return all_losses
 
 def evalFunc(policy, params):
+    MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
+
     feat_extractor = params['feat_extractor']
     data_list = params['data_list']
     feat_list = params['feat_list']
@@ -240,11 +216,13 @@ def evalFunc(policy, params):
     return loss
 
 def evalFuncBayes(policy, params):
+    MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
+
     feat_extractor = params['feat_extractor']
     data_list = params['data_list']
     feat_list = params['feat_list']
     batch_size = params['batch_size']
-    groups = params['groups']
+    groups = params.get('eval_groups', params['groups'])
     pca = params['pca']
     w = params['w']
     group_id = params['task_id']
@@ -403,152 +381,248 @@ def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
     # return groups, centers, intersection, ratio
 
     return groups, centers, true_groups
-def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_bin=31, prob_bin=10, num_ops=2, max_samples=100):
-    total_op_num = len(augmentation_space())
-    sample_num = 500
-    ###提取特征### 
-    feat_list, cls_list = getdatafeat(args, resize_size, data_list, model)
-    if args.gpu:
-        feat_list = torch.cat(feat_list, dim=0)
-        cls_list = torch.cat(cls_list, dim=0)
-    else:
-        feat_list = torch.cat(feat_list, dim=0).cpu().numpy()
-        cls_list = torch.cat(cls_list, dim=0).cpu().numpy()
-    # groups, centers, intersection, ratio = cluster_data_weighted(cls_list, label_list, n_clusters) 
-    # print(f"Jaccard ratio: {ratio}\t Intersection size: {len(intersection)}")
-    # # if ratio < 0.1:
-    # #     return [], [], [] 
-    # # groups = [np.unique(np.concatenate(groups))]
-    # groups = [intersection]
-    # centers = []
-    groups, centers, true_groups = cluster_data_weighted(cls_list, label_list, n_clusters, diff_c=args.diff_c)
-    # groups = [group]
-    centers = [] 
-    # centers = np.mean(feat_list[groups[0]], axis=0)
-    # breakhis:0.05
-    # plt.figure()
-    # pca = TSNE(n_components=2)
-    # feat_list = pca.fit_transform(feat_list)
-    # tsne_f = pca.fit_transform(feat_list)
-    # plt.subplot(2,n_clusters+1,1)
-    # plt.scatter(tsne_f[:,0], tsne_f[:,1], c=label_list, s=10)
-    # plt.title('tsne')
-    # pca = PCA(n_components=2)
-    # pca_f = pca.fit_transform(feat_list)
-    # plt.subplot(2,n_clusters+1,n_clusters+2)
-    # plt.scatter(pca_f[:,0], pca_f[:,1], c=label_list, s=10)
-    # plt.title('pca')
-    # pca = KernelPCA(n_components=int(0.01*feat_list[0].shape[0]), kernel='rbf')
-    if args.gpu:
-        if 'breakhis' in args.dataset:
-            pca = PCA_torch(n_components=int(0.05*feat_list[0].shape[0]))
-        else:
-            pca = PCA_torch(n_components=int(0.01*feat_list[0].shape[0]))
-        feat_list = pca.fit_transform(feat_list)
-    else:
-        if 'breakhis' in args.dataset:
-            pca = PCA(n_components=int(0.05*feat_list[0].shape[0]))
-        else:
-            pca = PCA(n_components=int(0.01*feat_list[0].shape[0]))
-        feat_list = pca.fit_transform(feat_list)
-    # if os.path.exists(f'./training_data_{args.dataset}_{sample_num}.pkl'):
-    #     with open(f'./training_data_{args.dataset}_{sample_num}.pkl', 'rb') as f:    
-        # groups, centers = cluster_data(feat_list, label_list, n_clusters)
-    # all_f = [tsne_f, pca_f]
-    # all_f = [feat_list]
-    # for j in range(len(all_f)):
-    #     f = all_f[j]
-    #     for i in range(n_clusters):
-    #         plt.subplot(len(all_f),n_clusters+1,j*(n_clusters+1)+i+2)
-    #         plt.scatter(f[groups[i],0], f[groups[i],1], c=np.array(label_list)[groups[i]], s=10)
-    # plt.savefig('./breakhis840X_groups_kernel_pca.png')
-    w = 0
-    # w = distance.squareform(distance.pdist(centers))
-    # w = 1 - w/np.sum(w, axis=1)
-    # new_data_list = []
 
-    # if args.resize:
-    #     transformer = transforms.Compose([transforms.Resize(resize_size), ToTensor()])
-    #     for indices in groups:
-    #         new_data_list.append(torch.cat([transformer(data_list[i]).unsqueeze(0)*255 for i in indices], dim=0).to(torch.uint8))
-    # else:
-    #     batch_size = 1
-    #     for indices in groups:
-    #         all_batch_imgs = []
-    #         indices = np.array_split(indices, np.arange(0, len(indices), batch_size)[1:])
-    #         for idx in indices:
-    #             batch_imgs = [data_list[i] for i in idx]
-    #             # batch_sizes = torch.tensor([i.shape[1:] for i in batch_imgs])
-    #             # batch_sizes, counts = torch.unique(batch_sizes, dim=0, return_counts=True)
-    #             # resize_size = batch_sizes[torch.argmax(counts)]
-    #             # transformer = transforms.Resize(resize_size.tolist())
-    #             # transformer = transforms.Compose([transforms.Resize(config['img_size']), ToTensor()])
-    #             transformer = transforms.Compose([ToTensor()])
-    #             batch_imgs = [transformer(d).unsqueeze(0)*255 for d in batch_imgs]
-    #             batch_imgs = torch.cat(batch_imgs, dim=0).to(torch.uint8)
-    #             all_batch_imgs.append(batch_imgs)
-    #         new_data_list.append(all_batch_imgs)
-    # ###定义子任务###
-    if args.use_prob:
-        n_dims = 3
-    else:
-        n_dims = 2
-    var_dim = num_ops*n_dims
-    Lb = np.array([0]*var_dim)
-    Ub = [total_op_num-1]*(num_ops) + [mag_bin-1]*num_ops
-    if args.use_prob:
-        Ub = Ub  + [prob_bin-1]*num_ops
-    Ub = np.array(Ub)
-    # if args.proxy:
-    #     tasks = [SingleTask(n_op*3,Lb,Ub,[0]*var_dim, evalFuncProxy) for _ in range(len(groups))]
-    # else:
-    #     tasks = [SingleTask(n_op*3,Lb,Ub,[0]*var_dim, evalFunc) for _ in range(len(groups))]
-    if args.bayes:
-        tasks = [SingleTask(num_ops*n_dims,Lb,Ub,[0]*var_dim, evalFuncBayes) for _ in range(len(groups))]
-    else:
-        tasks = [SingleTask(num_ops*n_dims,Lb,Ub,[0]*var_dim, evalFunc) for _ in range(len(groups))]
-    params = {'feat_extractor':model,
-              'data_list':data_list, 
-              'feat_list':feat_list, 
-              'batch_size':args.batch_size, 
-              'groups':groups, 
-              'centers':centers,
-              'pca':pca, 
-              'Lb':Lb, 'Ub':Ub,
-              'w':w,'n_op':num_ops,'mag_bin':mag_bin,'prob_bin':prob_bin,
-              'args':args,
-              'resize_size':resize_size,
-              'model':model,
-              }
-    options = {'popsize':30,'maxgen':2,'rmp':0.3,'reps':2,'proxy_update':10}
+
+def combine_feature_batches(feature_batches, class_batches, use_gpu):
+    if use_gpu:
+        return torch.cat(feature_batches, dim=0), torch.cat(class_batches, dim=0)
+    return (
+        torch.cat(feature_batches, dim=0).cpu().numpy(),
+        torch.cat(class_batches, dim=0).cpu().numpy(),
+    )
+
+
+def get_pca_component_count(dataset, feature_dim):
+    ratio = 0.05 if 'breakhis' in dataset else 0.01
+    return int(ratio * feature_dim)
+
+
+def build_feature_reducer(args, feature_dim):
+    n_components = get_pca_component_count(args.dataset, feature_dim)
+    if args.gpu:
+        from torch_pca import PCA as PCA_torch
+
+        return PCA_torch(n_components=n_components)
+
+    from sklearn.decomposition import PCA
+
+    return PCA(n_components=n_components)
+
+
+def reduce_features(args, feat_list):
+    pca = build_feature_reducer(args, feat_list[0].shape[0])
+    return pca.fit_transform(feat_list), pca
+
+
+def to_numpy_features(feat_list):
+    if isinstance(feat_list, torch.Tensor):
+        return feat_list.detach().cpu().numpy()
+    return np.asarray(feat_list)
+
+
+def allocate_representative_counts(sample_size):
+    center_count = int(round(sample_size * 0.5))
+    middle_count = int(round(sample_size * 0.3))
+    boundary_count = sample_size - center_count - middle_count
+    return center_count, middle_count, boundary_count
+
+
+def select_unique_ranked_indices(candidate_indices, selected, quota):
+    output = []
+    for idx in candidate_indices:
+        idx = int(idx)
+        if idx in selected:
+            continue
+        selected.add(idx)
+        output.append(idx)
+        if len(output) == quota:
+            break
+    return output
+
+
+def representative_group_indices(feat_list, group_indices, sample_size):
+    group_indices = np.asarray(group_indices)
+    if sample_size is None or sample_size <= 0 or len(group_indices) <= sample_size:
+        return group_indices.copy()
+
+    features = to_numpy_features(feat_list)[group_indices]
+    center = features.mean(axis=0, keepdims=True)
+    distances = np.linalg.norm(features - center, axis=1)
+    sorted_positions = np.argsort(distances)
+
+    center_count, middle_count, boundary_count = allocate_representative_counts(sample_size)
+    middle_rank = (len(sorted_positions) - 1) / 2.0
+    middle_positions = sorted_positions[np.argsort(np.abs(np.arange(len(sorted_positions)) - middle_rank))]
+
+    selected_positions = set()
+    chosen_positions = []
+    chosen_positions.extend(select_unique_ranked_indices(sorted_positions, selected_positions, center_count))
+    chosen_positions.extend(select_unique_ranked_indices(middle_positions, selected_positions, middle_count))
+    chosen_positions.extend(select_unique_ranked_indices(sorted_positions[::-1], selected_positions, boundary_count))
+
+    if len(chosen_positions) < sample_size:
+        chosen_positions.extend(
+            select_unique_ranked_indices(
+                sorted_positions,
+                selected_positions,
+                sample_size - len(chosen_positions),
+            )
+        )
+
+    return group_indices[np.array(chosen_positions)]
+
+
+def build_representative_groups(feat_list, groups, sample_size):
+    return [representative_group_indices(feat_list, group, sample_size) for group in groups]
+
+
+def build_search_bounds(total_op_num, num_ops, mag_bin, prob_bin, use_prob):
+    n_dims = 3 if use_prob else 2
+    var_dim = num_ops * n_dims
+    lb = np.array([0] * var_dim)
+    ub = [total_op_num - 1] * num_ops + [mag_bin - 1] * num_ops
+    if use_prob:
+        ub += [prob_bin - 1] * num_ops
+    return lb, np.array(ub), n_dims, var_dim
+
+
+def build_search_tasks(groups, num_ops, n_dims, lb, ub, use_bayes):
+    eval_func = evalFuncBayes if use_bayes else evalFunc
+    var_dim = num_ops * n_dims
+    return [SingleTask(var_dim, lb, ub, [0] * var_dim, eval_func) for _ in range(len(groups))]
+
+
+def build_mfc_params(
+    model,
+    data_list,
+    feat_list,
+    groups,
+    centers,
+    pca,
+    lb,
+    ub,
+    args,
+    resize_size,
+    num_ops,
+    mag_bin,
+    prob_bin,
+):
+    eval_sample_size = getattr(args, 'mfc_eval_sample_size', 0)
+    eval_groups = build_representative_groups(feat_list, groups, eval_sample_size)
+    return {
+        'feat_extractor': model,
+        'data_list': data_list,
+        'feat_list': feat_list,
+        'batch_size': args.batch_size,
+        'groups': groups,
+        'full_groups': groups,
+        'eval_groups': eval_groups,
+        'centers': centers,
+        'pca': pca,
+        'Lb': lb,
+        'Ub': ub,
+        'w': 0,
+        'n_op': num_ops,
+        'mag_bin': mag_bin,
+        'prob_bin': prob_bin,
+        'args': args,
+        'resize_size': resize_size,
+        'model': model,
+    }
+
+
+def default_search_options():
+    return {'popsize': 30, 'maxgen': 2, 'rmp': 0.3, 'reps': 2, 'proxy_update': 10}
+
+
+def create_policy_writers(args, task_count, summary_writer_cls):
     currtime = datetime.datetime.now().strftime('%m-%d-%H-%M-%S')
     log_name = f'MFCAugment-{currtime}-{args.num_ops}'
-    writer = [SummaryWriter(log_dir=os.path.join(args.log_path,args.save_name,log_name,f'task{x}')) for x in range(len(tasks))]
+    return [
+        summary_writer_cls(log_dir=os.path.join(args.log_path, args.save_name, log_name, f'task{x}'))
+        for x in range(task_count)
+    ]
+
+
+def run_policy_search(args, tasks, options, params, writer):
     if args.multitask:
+        from EA.MFSBX import MFSBX
+
         if args.generative:
             if args.proxy:
-                bestPop = GDPMFPSO(tasks, options, params, writer)
-            else:
-                bestPop = GDMFPSO(tasks, options, params, writer)
-        else:
-            # bestPop, skillFactor, bestInd = MFPSO(tasks, options, params, writer)
-            bestPop, skillFactor, bestInd = MFSBX(tasks, options, params, writer)
-    elif args.bayes:
-         bestPolicy = bayesian_optimization_tasks_parallel(tasks, args, params, rep=args.bayes_rep, topk=args.bayes_topk, max_evals=args.bayes_max_eval)
-    else:
-         bestPop, skillFactor, bestInd = SBX(tasks, options, params, writer)
-    if not args.bayes:
-        if args.group:
-            bestPolicy = formatPolicy(params, bestPop, skillFactor)
-        else:
-            bestPolicy = formatPolicy(params, bestPop)
-    # bestInd = formatPolicy(params, bestInd)
-    # skillFactor = np.array([bestPop[i,j].skill_factor for i in range(bestPop.shape[0]) for j in range(bestPop.shape[1])])
-    for i, p in enumerate(bestPolicy):
-        writer[0].add_text('Best Policy', str(p), i)
-    # for i, p in enumerate(bestInd):
-    #     writer[0].add_text('Best Ind', str(p), i)
-    # raise NotImplementedError
+                from EA.GDPMFPSO import GDPMFPSO
+
+                return GDPMFPSO(tasks, options, params, writer), None
+
+            from EA.GDMFPSO import GDMFPSO
+
+            return GDMFPSO(tasks, options, params, writer), None
+
+        best_pop, skill_factor, best_ind = MFSBX(tasks, options, params, writer)
+        return best_pop, skill_factor
+
+    if args.bayes:
+        best_policy = bayesian_optimization_tasks_parallel(
+            tasks,
+            args,
+            params,
+            rep=args.bayes_rep,
+            topk=args.bayes_topk,
+            max_evals=args.bayes_max_eval,
+        )
+        return best_policy, None
+
+    from EA.SBX import SBX
+
+    best_pop, skill_factor, best_ind = SBX(tasks, options, params, writer)
+    return best_pop, skill_factor
+
+
+def resolve_best_policy(args, params, search_result, skill_factor):
+    if args.bayes:
+        return search_result
+    if args.group:
+        return formatPolicy(params, search_result, skill_factor)
+    return formatPolicy(params, search_result)
+
+
+def log_best_policy(writer, best_policy):
+    for i, policy in enumerate(best_policy):
+        writer[0].add_text('Best Policy', str(policy), i)
+
+
+def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_bin=31, prob_bin=10, num_ops=2, max_samples=100):
+    from core.augmentations import augmentation_space
+    from tensorboardX import SummaryWriter
+
+    total_op_num = len(augmentation_space())
+    feat_batches, cls_batches = getdatafeat(args, resize_size, data_list, model)
+    feat_list, cls_list = combine_feature_batches(feat_batches, cls_batches, use_gpu=args.gpu)
+    groups, centers, true_groups = cluster_data_weighted(cls_list, label_list, n_clusters, diff_c=args.diff_c)
+    centers = []
+    feat_list, pca = reduce_features(args, feat_list)
+    lb, ub, n_dims, var_dim = build_search_bounds(total_op_num, num_ops, mag_bin, prob_bin, args.use_prob)
+    tasks = build_search_tasks(groups, num_ops, n_dims, lb, ub, args.bayes)
+    params = build_mfc_params(
+        model,
+        data_list,
+        feat_list,
+        groups,
+        centers,
+        pca,
+        lb,
+        ub,
+        args,
+        resize_size,
+        num_ops,
+        mag_bin,
+        prob_bin,
+    )
+    options = default_search_options()
+    writer = create_policy_writers(args, len(tasks), SummaryWriter)
+    search_result, skill_factor = run_policy_search(args, tasks, options, params, writer)
+    bestPolicy = resolve_best_policy(args, params, search_result, skill_factor)
+    log_best_policy(writer, bestPolicy)
     return bestPolicy, groups, true_groups
     
 def formatPolicy(param, bestPop, skillFactor=None,verbose=False):
@@ -614,13 +688,6 @@ def formatPolicy(param, bestPop, skillFactor=None,verbose=False):
 
     return formattedPolicyOut
 
-import logging
-# 在文件开头或在导入hyperopt之前添加
-logging.getLogger('hyperopt').setLevel(logging.WARNING)
-from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
-from core.augmentations_fastaa import augment_list
-import numpy as np
-
 def policy_decoder(augment, use_prob, n_op):
     formattedPolicy = {'op_index':[],'prob_index':[],'magnitude_index':[]}
     op_idx = []
@@ -638,7 +705,35 @@ def policy_decoder(augment, use_prob, n_op):
 
     return formattedPolicy
 
+
+def build_task_params(params, task_id):
+    task_params = params.copy()
+    task_params['task_id'] = task_id
+    return task_params
+
+
+def reevaluate_top_policies_with_full_groups(trial_history, params, topk):
+    if topk <= 0 or not trial_history:
+        return []
+
+    original_eval_groups = params.get('eval_groups')
+    eval_params = params.copy()
+    eval_params['eval_groups'] = params.get('full_groups', params['groups'])
+
+    candidates = []
+    for trial in trial_history[:topk]:
+        full_loss = evalFuncBayes(trial['policy'], eval_params)
+        candidates.append({'policy': trial['policy'], 'loss': full_loss})
+
+    if original_eval_groups is not None:
+        params['eval_groups'] = original_eval_groups
+
+    return sorted(candidates, key=lambda x: x['loss'])
+
 def bayesian_optimization_tasks(tasks, args, params, max_evals=200):
+    from hyperopt import Trials, fmin, hp, tpe
+    from core.augmentations_fastaa import augment_list
+
     """
     使用HyperOpt的贝叶斯优化来求解任务
     
@@ -756,7 +851,16 @@ def bayesian_optimization_tasks_parallel(tasks, args, params, rep=1, topk=100, m
         with ThreadPoolExecutor(max_workers=4) as executor:
             # 提交所有任务
             future_to_task = {
-                executor.submit(bayesian_optimization_single_task, task_idx, args, task, params, rep, topk, max_evals): task_idx 
+                executor.submit(
+                    bayesian_optimization_single_task,
+                    task_idx,
+                    args,
+                    task,
+                    build_task_params(params, task_idx),
+                    rep,
+                    topk,
+                    max_evals,
+                ): task_idx
                 for task_idx, task in enumerate(tasks)
             }
             
@@ -776,6 +880,9 @@ def bayesian_optimization_tasks_parallel(tasks, args, params, rep=1, topk=100, m
     return final_results
 
 def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=100, max_evals=200):
+    from hyperopt import Trials, fmin, hp, tpe
+    from core.augmentations_fastaa import augment_list
+
     """
     对单个任务使用贝叶斯优化
     
@@ -796,7 +903,6 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
     
     st = time.time()
     # print(f"Optimizing task {task_idx+1}")
-    params['task_id'] = task_idx
     # 定义搜索空间
     space = {}
     for i in range(args.num_ops):
@@ -833,9 +939,10 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
                 trials=trials,
                 show_progressbar=False,
                 verbose=False)
-    trial_history = sorted(trial_history, key=lambda x: x['loss'], reverse=False)[:topk]
+    trial_history = sorted(trial_history, key=lambda x: x['loss'], reverse=False)
+    final_trial_history = reevaluate_top_policies_with_full_groups(trial_history, params, topk)
     merged_policies = {'op_index':[],'prob_index':[],'magnitude_index':[]}
-    for r in trial_history:
+    for r in final_trial_history:
         p = r['policy']
         merged_policies['op_index'].append(p['op_index'])
         merged_policies['magnitude_index'].append(p['magnitude_index'])
@@ -854,7 +961,7 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
             final_policies['magnitude_index'].append(np.unique(mag_idx[i,:],axis=0))
         else:
             final_policies['magnitude_index'].append(np.unique(mag_idx[i,:],axis=0))
-    best_loss = min([trial['loss'] for trial in trial_history])
+    best_loss = final_trial_history[0]['loss'] if final_trial_history else trial_history[0]['loss']
     elapsed_time = time.time() - st
     return final_policies, task_idx, elapsed_time, best_loss
 
