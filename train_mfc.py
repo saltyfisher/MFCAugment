@@ -1,7 +1,7 @@
+import numpy as np
 import torch
 import os
 import logging
-import numpy as np
 import subprocess
 import time
 import torchvision
@@ -72,7 +72,7 @@ def build_parser():
     parser.add_argument('--generative', action='store_true', help='是否在多任务算法中启用生成式模型')
     parser.add_argument('--bayes', action='store_true', help='是否在多任务算法中启用贝叶斯优化')
     parser.add_argument('--bayes_max_eval', type=int, default=200, help='贝叶斯优化最大迭代次数')
-    parser.add_argument('--bayes_topk', type=int, default=100, help='贝叶斯优化返回的策略数')
+    parser.add_argument('--bayes_topk', type=int, default=10, help='贝叶斯优化返回的策略数')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数')
     parser.add_argument('--mfc_eval_sample_ratio', type=sample_ratio, default=0.2,
                         help='Bayes搜索阶段每个子集使用的代表样本比例，取值范围为(0, 1)')

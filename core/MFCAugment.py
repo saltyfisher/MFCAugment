@@ -18,7 +18,7 @@ def getdatafeat(args, resize_size, data_list, model):
     # model = torch.nn.DataParallel(model)
     st = time.time()
     if args.resize:
-        batch = 8192
+        batch = 64
     else:
         batch = 1
     
