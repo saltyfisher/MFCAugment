@@ -189,10 +189,20 @@ def prepare_output_config(args, params_root=Path('./params_save'), logs_root=Pat
     return OutputConfig(save_path=save_path, log_path=log_path, save_name=save_name)
 
 
+def resolve_device(args):
+    if not args.gpu:
+        return torch.device('cpu')
+    if not torch.cuda.is_available():
+        raise RuntimeError('--gpu was requested, but CUDA is not available')
+    return torch.device(f'cuda:{args.device}')
+
+
 def create_model(args):
     num_classes = num_class(args.dataset)
     model = models.__dict__[args.model](num_classes=num_classes)
-    model.to(f'cuda:{args.device}')
+    device = resolve_device(args)
+    args.device = device
+    model.to(device)
     return model, num_classes
 
 
@@ -218,7 +228,9 @@ def print_trial_banner(trial_index, total_trials):
     print(f"{'='*50}")
 
 
-def run_trial(args, itrs, dataroot='../MedicalImageClassficationData'):
+def run_trial(args, itrs, dataroot=None):
+    if dataroot is None:
+        dataroot = args.data_dir
     print_trial_banner(itrs, args.num_trials)
     model, num_classes = create_model(args)
     optimizer = create_optimizer(model, args)

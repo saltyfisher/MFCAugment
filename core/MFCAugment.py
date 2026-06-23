@@ -548,6 +548,11 @@ def create_policy_writers(args, task_count, summary_writer_cls):
     ]
 
 
+def close_policy_writers(writers):
+    for writer in writers:
+        writer.close()
+
+
 def run_policy_search(args, tasks, options, params, writer):
     if args.multitask:
         from EA.MFSBX import MFSBX
@@ -624,10 +629,13 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
     )
     options = default_search_options()
     writer = create_policy_writers(args, len(tasks), SummaryWriter)
-    search_result, skill_factor = run_policy_search(args, tasks, options, params, writer)
-    bestPolicy = resolve_best_policy(args, params, search_result, skill_factor)
-    log_best_policy(writer, bestPolicy)
-    return bestPolicy, groups, true_groups
+    try:
+        search_result, skill_factor = run_policy_search(args, tasks, options, params, writer)
+        bestPolicy = resolve_best_policy(args, params, search_result, skill_factor)
+        log_best_policy(writer, bestPolicy)
+        return bestPolicy, groups, true_groups
+    finally:
+        close_policy_writers(writer)
     
 def formatPolicy(param, bestPop, skillFactor=None,verbose=False):
     Ub = param['Ub']
@@ -733,6 +741,33 @@ def reevaluate_top_policies_with_full_groups(trial_history, params, topk):
         params['eval_groups'] = original_eval_groups
 
     return sorted(candidates, key=lambda x: x['loss'])
+
+
+def merge_trial_policies(trial_history, use_prob):
+    if not trial_history:
+        return {'op_index': np.empty((0, 0), dtype=int), 'prob_index': [], 'magnitude_index': []}
+
+    op_rows = np.vstack([np.asarray(trial['policy']['op_index']).reshape(1, -1) for trial in trial_history])
+    magnitude_rows = np.vstack([
+        np.asarray(trial['policy']['magnitude_index']).reshape(1, -1)
+        for trial in trial_history
+    ])
+    unique_ops, inverse = np.unique(op_rows, axis=0, return_inverse=True)
+    final_policies = {'op_index': unique_ops, 'prob_index': [], 'magnitude_index': []}
+
+    if use_prob:
+        probability_rows = np.vstack([
+            np.asarray(trial['policy']['prob_index']).reshape(1, -1)
+            for trial in trial_history
+        ])
+
+    for op_group in range(len(unique_ops)):
+        matches = inverse == op_group
+        final_policies['magnitude_index'].append(np.unique(magnitude_rows[matches], axis=0))
+        if use_prob:
+            final_policies['prob_index'].append(np.unique(probability_rows[matches], axis=0))
+
+    return final_policies
 
 def bayesian_optimization_tasks(tasks, args, params, max_evals=200):
     from hyperopt import Trials, fmin, hp, tpe
@@ -945,26 +980,7 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
                 verbose=False)
     trial_history = sorted(trial_history, key=lambda x: x['loss'], reverse=False)
     final_trial_history = reevaluate_top_policies_with_full_groups(trial_history, params, topk)
-    merged_policies = {'op_index':[],'prob_index':[],'magnitude_index':[]}
-    for r in final_trial_history:
-        p = r['policy']
-        merged_policies['op_index'].append(p['op_index'])
-        merged_policies['magnitude_index'].append(p['magnitude_index'])
-        if args.use_prob:
-            merged_policies['prob_index'].append(p['prob_index'])
-    final_policies = {'op_index':[],'prob_index':[],'magnitude_index':[]}
-    op_index = merged_policies['op_index']
-    uni_op_index = np.unique(op_index, axis=0)
-    idx = [np.where((uni_op_index[i,:]==op_index).all(-1))[0] for i in range(uni_op_index.shape[0])]
-    final_policies['op_index'] = uni_op_index.squeeze()
-    mag_idx = np.array(merged_policies['magnitude_index']).squeeze()
-    prob_idx = np.array(merged_policies['prob_index']).squeeze()
-    for i in idx:            
-        if args.use_prob:
-            final_policies['prob_index'].append(np.unique(prob_idx[i,:],axis=0))
-            final_policies['magnitude_index'].append(np.unique(mag_idx[i,:],axis=0))
-        else:
-            final_policies['magnitude_index'].append(np.unique(mag_idx[i,:],axis=0))
+    final_policies = merge_trial_policies(final_trial_history, args.use_prob)
     best_loss = final_trial_history[0]['loss'] if final_trial_history else trial_history[0]['loss']
     elapsed_time = time.time() - st
     return final_policies, task_idx, elapsed_time, best_loss

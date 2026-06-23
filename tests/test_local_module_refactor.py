@@ -68,8 +68,33 @@ def test_dataset_roots_are_explicit():
 
     roots = data.get_dataset_roots(Path("root"), "chestct", None)
     assert roots == (
-        Path("root") / "chest-ctscan-images_datasets" / "train",
-        Path("root") / "chest-ctscan-images_datasets" / "test",
+        Path("root") / "chest-ctscan-images_datasets" / "Data" / "train",
+        Path("root") / "chest-ctscan-images_datasets" / "Data" / "test",
+    )
+
+
+def test_chestct_roots_accept_direct_data_directory(tmp_path):
+    import data
+
+    data_root = tmp_path / "Data"
+    (data_root / "train").mkdir(parents=True)
+    (data_root / "test").mkdir()
+
+    assert data.get_dataset_roots(data_root, "chestct", None) == (
+        data_root / "train",
+        data_root / "test",
+    )
+
+
+def test_breakhis_roots_accept_direct_dataset_directory(tmp_path):
+    import data
+
+    dataset_root = tmp_path / "BreakHis"
+    (dataset_root / "40").mkdir(parents=True)
+
+    assert data.get_dataset_roots(dataset_root, "breakhis", "40") == (
+        dataset_root / "40",
+        None,
     )
 
     roots = data.get_dataset_roots(Path("root"), "corona", None)
@@ -112,3 +137,22 @@ def test_validation_split_returns_full_training_dataset():
     assert len(val_folds) == 2
     assert all(fold.transform == "train" for fold in train_folds)
     assert all(fold.transform == "test" for fold in val_folds)
+
+
+def test_mydatasubset_initializes_transform_attributes():
+    import data
+
+    class FakeDataset:
+        samples = [("image-path", 1)]
+        transform = None
+        target_transform = None
+
+        @staticmethod
+        def loader(path):
+            return "image"
+
+    subset = data.Mydatasubset(FakeDataset(), [0])
+
+    assert subset[0] == ("image", 1, 0)
+    assert subset.transform is None
+    assert subset.target_transform is None

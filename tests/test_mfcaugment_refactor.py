@@ -322,3 +322,36 @@ def test_bayesian_parallel_passes_independent_params_per_task(monkeypatch):
     assert len({entry[1] for entry in seen}) == 2
     assert "task_id" not in params
     assert "local_mutation" not in params
+
+
+def test_merge_trial_policies_keeps_two_dimensional_rows_for_topk_one():
+    trial_history = [{
+        "policy": {
+            "op_index": np.array([[1, 2]]),
+            "magnitude_index": np.array([[3, 4]]),
+            "prob_index": [],
+        },
+        "loss": 0.5,
+    }]
+
+    merged = mfc.merge_trial_policies(trial_history, use_prob=False)
+
+    assert merged["op_index"].shape == (1, 2)
+    assert len(merged["magnitude_index"]) == 1
+    assert merged["magnitude_index"][0].shape == (1, 2)
+    assert merged["magnitude_index"][0].tolist() == [[3, 4]]
+
+
+def test_close_policy_writers_closes_every_writer():
+    class FakeWriter:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    writers = [FakeWriter(), FakeWriter()]
+
+    mfc.close_policy_writers(writers)
+
+    assert all(writer.closed for writer in writers)

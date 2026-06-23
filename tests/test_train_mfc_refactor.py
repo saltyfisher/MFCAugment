@@ -103,6 +103,12 @@ def test_get_cluster_count_matches_existing_dataset_rules(train_mfc, dataset, ex
     assert train_mfc.get_cluster_count(dataset) == expected
 
 
+def test_resolve_device_uses_cpu_when_gpu_is_disabled(train_mfc):
+    args = types.SimpleNamespace(gpu=False, device=0)
+
+    assert train_mfc.resolve_device(args).type == "cpu"
+
+
 def test_prepare_output_config_builds_existing_names_and_paths(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args(
@@ -128,6 +134,29 @@ def test_prepare_output_config_builds_existing_names_and_paths(train_mfc):
     assert args.save_name == output.save_name
     assert args.proxy_log_path == output.log_path / "proxy"
     assert args.GD_save_path == output.save_path / "GD"
+
+
+def test_run_trial_uses_configured_data_dir(train_mfc, monkeypatch, tmp_path):
+    captured = {}
+    args = types.SimpleNamespace(num_trials=1, data_dir="E:/Data/MedicalImage")
+
+    monkeypatch.setattr(train_mfc, "create_model", lambda args: ("model", 4))
+    monkeypatch.setattr(train_mfc, "create_optimizer", lambda model, args: "optimizer")
+    monkeypatch.setattr(
+        train_mfc,
+        "prepare_output_config",
+        lambda args: train_mfc.OutputConfig(tmp_path, tmp_path, "smoke"),
+    )
+
+    def fake_train_val(model, optimizer, num_classes, args, itrs, dataroot, *rest):
+        captured["dataroot"] = dataroot
+        return model, {"accuracy": 1.0}
+
+    monkeypatch.setattr(train_mfc, "train_val", fake_train_val)
+
+    train_mfc.run_trial(args, 0)
+
+    assert captured["dataroot"] == "E:/Data/MedicalImage"
 
 
 def test_build_stats_rows_formats_metric_values(train_mfc):

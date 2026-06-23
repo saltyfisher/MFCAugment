@@ -15,9 +15,22 @@ def get_resize_size(dataset):
 def get_dataset_roots(dataroot, dataset, magnification):
     dataroot = Path(dataroot)
     if 'breakhis' in dataset:
+        direct_root = dataroot / magnification
+        if direct_root.is_dir():
+            return direct_root, None
         return dataroot / 'BreakHis' / magnification, None
     if 'chestct' in dataset:
-        root = dataroot / 'chest-ctscan-images_datasets'
+        candidates = [
+            dataroot,
+            dataroot / 'Data',
+            dataroot / 'chest-ctscan-images_datasets' / 'Data',
+            dataroot / 'chest-ctscan-images_datasets',
+        ]
+        for root in candidates:
+            if (root / 'train').is_dir() and (root / 'test').is_dir():
+                return root / 'train', root / 'test'
+
+        root = dataroot / 'chest-ctscan-images_datasets' / 'Data'
         return root / 'train', root / 'test'
     if 'corona' in dataset:
         root = dataroot / 'Coronahack-Chest-XRay-Dataset'
@@ -78,6 +91,11 @@ class Mydata(torchvision.datasets.ImageFolder):
 
 
 class Mydatasubset(Subset):
+    def __init__(self, dataset, indices):
+        super().__init__(dataset, indices)
+        self.transform = getattr(dataset, 'transform', None)
+        self.target_transform = getattr(dataset, 'target_transform', None)
+
     def __getitem__(self, index):
         path, target = self.dataset.samples[self.indices[index]]
         sample = self.dataset.loader(path)
