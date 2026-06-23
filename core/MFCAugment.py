@@ -333,6 +333,15 @@ def cluster_data(feat_list, label_list, n_clusters):
     centers = [np.mean(feat_list[groups[i]], axis=0) for i in range(n_clusters)]
     return groups, centers
 
+
+def sample_weight_centers(weights, center_count, diff_c):
+    draw_count = center_count if diff_c else 1
+    center_indices = np.random.choice(len(weights), draw_count, p=weights)
+    centers = weights[np.asarray(center_indices)]
+    if not diff_c:
+        centers = np.repeat(centers, center_count)
+    return centers
+
 def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
     groups = []
     sample_num = int(feat_list.shape[0]/n_clusters)
@@ -344,12 +353,7 @@ def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
     weights = -np.log(feat_list[np.arange(feat_list.shape[0]),label_list]+1e-6)*np.sum(-feat_list * np.where(feat_list > 0, np.log(feat_list+1e-6), 0), axis=1)
     weights = np.nan_to_num(weights, nan=0.0, neginf=0)
     weights = weights / np.sum(weights)
-    if diff_c:
-        mu = [np.argwhere(np.cumsum(weights / np.sum(weights))-np.random.rand() <= 0)[-1] for _ in range(sample_counts)]
-        mu = [weights[m] for m in mu]
-    else:
-        mu = [np.argwhere(np.cumsum(weights / np.sum(weights))-np.random.rand() <= 0)[-1]] * sample_counts
-        mu = [weights[m] for m in mu]
+    mu = sample_weight_centers(weights, sample_counts, diff_c)
     groups = []
     for i in range(sample_counts):
         w = 1 / (np.sqrt(2 * np.pi)) * np.exp(- (weights - mu[i]) ** 2 / 2)

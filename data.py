@@ -104,7 +104,7 @@ class Mydatasubset(Subset):
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        return sample, target, self.indices[index]
+        return sample, target, index
 
     def __getitems__(self, indices):
         return [self.__getitem__(index) for index in indices]

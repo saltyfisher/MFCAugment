@@ -109,6 +109,36 @@ def test_resolve_device_uses_cpu_when_gpu_is_disabled(train_mfc):
     assert train_mfc.resolve_device(args).type == "cpu"
 
 
+def test_run_epoch_applies_group_policy_per_sample_and_resets_each_batch(train_mfc):
+    torch = train_mfc.torch
+    calls = []
+
+    def make_policy(policy_id):
+        def apply(image):
+            calls.append(policy_id)
+            return train_mfc.transforms.ToTensor()(image)
+        return apply
+
+    batches = [
+        (torch.rand(2, 3, 4, 4), torch.tensor([0, 1]), torch.tensor([0, 1])),
+        (torch.rand(2, 3, 4, 4), torch.tensor([1, 0]), torch.tensor([2, 3])),
+    ]
+    model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(3 * 4 * 4, 2))
+
+    metrics = train_mfc.run_epoch(
+        model,
+        batches,
+        torch.nn.CrossEntropyLoss(),
+        optimizer=None,
+        policy=[make_policy(0), make_policy(1)],
+        groups={0: 0, 1: 1, 2: 0, 3: 1},
+        args=types.SimpleNamespace(group=True),
+    )
+
+    assert calls == [0, 1, 0, 1]
+    assert metrics["loss"] >= 0
+
+
 def test_prepare_output_config_builds_existing_names_and_paths(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args(
@@ -157,6 +187,29 @@ def test_run_trial_uses_configured_data_dir(train_mfc, monkeypatch, tmp_path):
     train_mfc.run_trial(args, 0)
 
     assert captured["dataroot"] == "E:/Data/MedicalImage"
+
+
+def test_refresh_mfc_policy_uses_true_groups_for_group_assignment(train_mfc, monkeypatch):
+    mfc_module = sys.modules["core.MFCAugment"]
+    monkeypatch.setattr(
+        mfc_module,
+        "MFCAugment",
+        lambda *args, **kwargs: (["policy"], [[0]], [[1, 2]]),
+    )
+    monkeypatch.setattr(train_mfc, "build_policy_transforms", lambda policies, size, args: policies)
+    args = types.SimpleNamespace(dataset="chestct", num_ops=2, group=True)
+
+    policies, idx_to_group, raw_policies = train_mfc.refresh_mfc_policy(
+        model="model",
+        resize_size=(224, 224),
+        data_list=["a", "b", "c"],
+        label_list=[0, 1, 1],
+        args=args,
+    )
+
+    assert policies == ["policy"]
+    assert raw_policies == ["policy"]
+    assert idx_to_group == {1: 0, 2: 0}
 
 
 def test_build_stats_rows_formats_metric_values(train_mfc):

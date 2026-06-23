@@ -148,7 +148,12 @@ def refresh_mfc_policy(model, resize_size, data_list, label_list, args):
     )
     if policy_subset == []:
         return [], {}, []
-    return build_policy_transforms(policy_subset, resize_size, args), build_idx_to_group(groups), policy_subset
+    assignment_groups = true_group if args.group else groups
+    return (
+        build_policy_transforms(policy_subset, resize_size, args),
+        build_idx_to_group(assignment_groups),
+        policy_subset,
+    )
 
 
 def build_save_name(args):
@@ -325,19 +330,18 @@ def run_epoch(model, loader, loss_fn, optimizer, policy, groups, args):
     train_loss = 0.0
     all_labels = []
     all_preds = []
-    aug_data = []
     for batch in loader:
         if groups == []:
             data, label = batch[:2]
         else:
+            augmented_batch = []
             for data, label, data_idx in zip(*batch):
                 if args.group:
-                    p_idx = groups.get(data_idx, 0)
+                    p_idx = groups.get(int(data_idx), 0)
                 else:
                     p_idx = np.random.randint(0, len(policy))
-                aug_data.append(policy[p_idx](ToPILImage()(data)))
-            aug_data = torch.stack(aug_data)
-            data = aug_data
+                augmented_batch.append(policy[p_idx](ToPILImage()(data)))
+            data = torch.stack(augmented_batch)
             label = batch[1]
 
         steps += 1

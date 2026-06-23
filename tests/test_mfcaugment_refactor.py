@@ -355,3 +355,15 @@ def test_close_policy_writers_closes_every_writer():
     mfc.close_policy_writers(writers)
 
     assert all(writer.closed for writer in writers)
+
+
+def test_sample_weight_centers_uses_one_center_unless_diff_c_enabled(monkeypatch):
+    weights = np.array([0.1, 0.2, 0.3, 0.4])
+
+    monkeypatch.setattr(np.random, "choice", lambda size, count, p: np.arange(count))
+
+    shared = mfc.sample_weight_centers(weights, center_count=3, diff_c=False)
+    distinct = mfc.sample_weight_centers(weights, center_count=3, diff_c=True)
+
+    assert shared.tolist() == [0.1, 0.1, 0.1]
+    assert distinct.tolist() == [0.1, 0.2, 0.3]

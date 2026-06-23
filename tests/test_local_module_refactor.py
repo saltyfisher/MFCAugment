@@ -156,3 +156,21 @@ def test_mydatasubset_initializes_transform_attributes():
     assert subset[0] == ("image", 1, 0)
     assert subset.transform is None
     assert subset.target_transform is None
+
+
+def test_mydatasubset_returns_subset_relative_index():
+    import data
+
+    class FakeDataset:
+        samples = [(f"image-{i}", i % 2) for i in range(8)]
+        transform = None
+        target_transform = None
+
+        @staticmethod
+        def loader(path):
+            return path
+
+    subset = data.Mydatasubset(FakeDataset(), [5, 7])
+
+    assert subset[0][2] == 0
+    assert subset[1][2] == 1
