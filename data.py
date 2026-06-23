@@ -20,18 +20,7 @@ def get_dataset_roots(dataroot, dataset, magnification):
             return direct_root, None
         return dataroot / 'BreakHis' / magnification, None
     if 'chestct' in dataset:
-        candidates = [
-            dataroot,
-            dataroot / 'Data',
-            dataroot / 'chest-ctscan-images_datasets' / 'Data',
-            dataroot / 'chest-ctscan-images_datasets',
-        ]
-        for root in candidates:
-            if (root / 'train').is_dir() and (root / 'test').is_dir():
-                return root / 'train', root / 'test'
-
-        root = dataroot / 'chest-ctscan-images_datasets' / 'Data'
-        return root / 'train', root / 'test'
+        return dataroot / 'chest-ctscan-images_datasets' / 'train', dataroot / 'chest-ctscan-images_datasets' / 'test'
     if 'corona' in dataset:
         root = dataroot / 'Coronahack-Chest-XRay-Dataset'
         return root / 'train', root / 'test'
