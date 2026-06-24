@@ -350,9 +350,18 @@ def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
     label_list = np.array(label_list)
     if isinstance(feat_list, torch.Tensor):
         feat_list = feat_list.cpu().numpy()
-    weights = -np.log(feat_list[np.arange(feat_list.shape[0]),label_list]+1e-6)*np.sum(-feat_list * np.where(feat_list > 0, np.log(feat_list+1e-6), 0), axis=1)
-    weights = np.nan_to_num(weights, nan=0.0, neginf=0)
-    weights = weights / np.sum(weights)
+    probabilities = np.clip(feat_list, 1e-12, 1.0)
+    true_class_probabilities = probabilities[np.arange(probabilities.shape[0]), label_list]
+    negative_log_likelihood = -np.log(true_class_probabilities)
+    entropy = np.sum(-probabilities * np.log(probabilities), axis=1)
+    weights = negative_log_likelihood * entropy
+    weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+    weights = np.clip(weights, 0.0, None)
+    total_weight = np.sum(weights)
+    if total_weight <= 0.0:
+        weights = np.full(weights.shape, 1.0 / len(weights))
+    else:
+        weights = weights / total_weight
     mu = sample_weight_centers(weights, sample_counts, diff_c)
     groups = []
     for i in range(sample_counts):

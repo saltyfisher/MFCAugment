@@ -367,3 +367,23 @@ def test_sample_weight_centers_uses_one_center_unless_diff_c_enabled(monkeypatch
 
     assert shared.tolist() == [0.1, 0.1, 0.1]
     assert distinct.tolist() == [0.1, 0.2, 0.3]
+
+
+def test_cluster_data_weighted_handles_high_confidence_probabilities():
+    probabilities = np.array([
+        [0.9999999, 0.0000001],
+        [0.80, 0.20],
+        [0.30, 0.70],
+        [0.10, 0.90],
+    ])
+    labels = np.array([0, 0, 1, 1])
+
+    groups, centers, true_groups = mfc.cluster_data_weighted(
+        probabilities,
+        labels,
+        n_clusters=2,
+        diff_c=False,
+    )
+
+    assert len(groups) == len(centers) == len(true_groups) == 2
+    assert set(np.concatenate(true_groups)) == set(range(len(labels)))
