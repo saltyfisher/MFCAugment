@@ -20,8 +20,8 @@ def get_dataset_roots(dataroot, dataset, magnification):
             return direct_root, None
         return dataroot / 'BreakHis' / magnification, None
     if 'chestct' in dataset:
-        direct_train = dataroot / 'train'
-        direct_test = dataroot / 'test'
+        direct_train = dataroot / 'chest-ctscan-images_datasets' / 'train'
+        direct_test = dataroot / 'chest-ctscan-images_datasets' / 'test'
         if direct_train.is_dir() and direct_test.is_dir():
             return direct_train, direct_test
 

@@ -40,7 +40,7 @@ def sample_ratio(value):
 
 def build_parser():
     parser = argparse.ArgumentParser(description='Medical Image Classification with UncertaintyMixup')
-    parser.add_argument('--data_dir', type=str, default='/workspace/MedicalImageClassificationData/',
+    parser.add_argument('--data_dir', type=str, default='/workspace/MedicalImageClassification/',
                         help='数据集目录路径')
     parser.add_argument('--model', type=str, default='resnet18', help='模型选择')
     parser.add_argument('--batch_size', type=int, default=32, help='批次大小')

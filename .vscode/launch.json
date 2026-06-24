@@ -14,7 +14,7 @@
             "cwd": "${workspaceFolder}",   
             "args":[
                 // "--dataset","breakhis",
-                "--data_dir","E:\\Data\\MedicalImage",
+                // "--data_dir","E:\\Data\\MedicalImage",
                 "--dataset","chestct",
                 // "--model","resnet18",
                 "--magnification","40",
