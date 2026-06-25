@@ -156,22 +156,76 @@ def refresh_mfc_policy(model, resize_size, data_list, label_list, args):
     )
 
 
+def format_name_value(value):
+    if isinstance(value, float):
+        value = f'{value:g}'
+    value = str(value)
+    return value.replace('-', 'm').replace('.', 'p').replace('/', '-').replace('\\', '-')
+
+
+def add_non_default_part(parts, args, name, default, prefix=None):
+    value = getattr(args, name, default)
+    if value != default:
+        parts.append(f'{prefix or name}{format_name_value(value)}')
+
+
 def build_save_name(args):
-    save_name = f"{args.dataset}_{args.test_split}"
-    if args.dataset == 'breakhis':
-        save_name += f'_{args.magnification}X'
+    parts = [format_name_value(args.dataset), format_name_value(args.test_split)]
+    if args.dataset == 'breakhis' and args.magnification is not None:
+        parts.append(f'{format_name_value(args.magnification)}X')
     if args.mfc:
-        save_name += '_mfc'
+        parts.append('mfc')
     elif args.strategy != '':
-        save_name += f'_{args.strategy}'
-    save_name += f'_{args.model}'
+        parts.append(format_name_value(args.strategy))
+    parts.append(format_name_value(args.model))
+
     if args.online:
-        save_name += '_online'
+        parts.append('online')
+    if args.testing:
+        parts.append('testing')
+    if args.pretrain:
+        parts.append('pretrain')
+    if not args.resize:
+        parts.append('noresize')
+
+    if args.mfc:
+        add_non_default_part(parts, args, 'num_ops', 2, 'ops')
+        if args.use_prob:
+            parts.append('useprob')
+        add_non_default_part(parts, args, 'mag_bin', 31, 'magbin')
+        add_non_default_part(parts, args, 'prob_bin', 10, 'probbin')
+        add_non_default_part(parts, args, 'l', 1, 'l')
+        if args.multitask:
+            parts.append('multitask')
+        if args.generative:
+            parts.append('generative')
+        if args.bayes:
+            parts.append('bayes')
+            parts.extend([
+                f'eval{format_name_value(args.bayes_max_eval)}',
+                f'topk{format_name_value(args.bayes_topk)}',
+                f'rep{format_name_value(args.bayes_rep)}',
+                f'ratio{format_name_value(args.mfc_eval_sample_ratio)}',
+            ])
+        if args.group:
+            parts.append('group')
+        if args.diff_c:
+            parts.append('diffc')
+
+    add_non_default_part(parts, args, 'batch_size', 32, 'bs')
+    add_non_default_part(parts, args, 'num_epochs', 180, 'ep')
+    add_non_default_part(parts, args, 'lr', 0.001, 'lr')
+    add_non_default_part(parts, args, 'dropout_rate', 0.5, 'drop')
+    if args.optimizer != 'adam':
+        parts.append(format_name_value(args.optimizer))
+    add_non_default_part(parts, args, 'momentum', 0.9, 'mom')
+    add_non_default_part(parts, args, 'weight_decay', 1e-4, 'wd')
+
     if args.proxy:
-        save_name += '_proxy'
+        parts.append('proxy')
     if args.GD:
-        save_name += '_GD'
-    return save_name
+        parts.append('GD')
+    return '_'.join(parts)
 
 
 def prepare_output_config(args, params_root=Path('./params_save'), logs_root=Path('./logs')):
@@ -280,10 +334,7 @@ def print_stats_rows(stats):
 
 
 def build_stats_csv_path(args):
-    strategy_name = 'mfc' if args.mfc else args.strategy
-    if args.dataset == 'breakhis':
-        return Path(f"result/{args.dataset}_{args.magnification}X_{strategy_name}_{args.model}.csv")
-    return Path(f"result/{args.dataset}_{strategy_name}_{args.model}.csv")
+    return Path('result') / f'{build_save_name(args)}.csv'
 
 
 def write_stats_csv(csv_filename, stats):

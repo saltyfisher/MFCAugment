@@ -139,7 +139,7 @@ def test_run_epoch_applies_group_policy_per_sample_and_resets_each_batch(train_m
     assert metrics["loss"] >= 0
 
 
-def test_prepare_output_config_builds_existing_names_and_paths(train_mfc):
+def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args(
         [
@@ -153,12 +153,27 @@ def test_prepare_output_config_builds_existing_names_and_paths(train_mfc):
             "--GD",
             "--model",
             "resnet34",
+            "--bayes",
+            "--group",
+            "--diff_c",
+            "--mfc_eval_sample_ratio",
+            "0.35",
+            "--bayes_max_eval",
+            "12",
+            "--bayes_topk",
+            "3",
+            "--bayes_rep",
+            "1",
+            "--testing",
         ]
     )
 
     output = train_mfc.prepare_output_config(args)
 
-    assert output.save_name == "breakhis_0.2_100X_mfc_resnet34_online_proxy_GD"
+    assert output.save_name == (
+        "breakhis_0p2_100X_mfc_resnet34_online_testing_bayes_eval12_topk3_rep1_ratio0p35"
+        "_group_diffc_proxy_GD"
+    )
     assert output.save_path == Path("params_save") / "mfc"
     assert output.log_path == Path("logs") / "mfc"
     assert args.save_name == output.save_name
@@ -226,11 +241,26 @@ def test_build_stats_rows_formats_metric_values(train_mfc):
     }
 
 
-def test_build_stats_csv_path_matches_existing_naming(train_mfc):
+def test_build_stats_csv_path_uses_parameterized_save_name(train_mfc):
     parser = train_mfc.build_parser()
 
-    mfc_args = parser.parse_args(["--dataset", "breakhis", "--magnification", "40", "--mfc"])
-    assert train_mfc.build_stats_csv_path(mfc_args) == Path("result/breakhis_40X_mfc_resnet18.csv")
+    mfc_args = parser.parse_args(
+        [
+            "--dataset",
+            "breakhis",
+            "--magnification",
+            "40",
+            "--mfc",
+            "--bayes",
+            "--group",
+            "--diff_c",
+            "--mfc_eval_sample_ratio",
+            "0.5",
+        ]
+    )
+    assert train_mfc.build_stats_csv_path(mfc_args) == Path(
+        "result/breakhis_0p2_40X_mfc_resnet18_bayes_eval200_topk10_rep2_ratio0p5_group_diffc.csv"
+    )
 
     strategy_args = parser.parse_args(["--dataset", "chestct", "--strategy", "randaugment"])
-    assert train_mfc.build_stats_csv_path(strategy_args) == Path("result/chestct_randaugment_resnet18.csv")
+    assert train_mfc.build_stats_csv_path(strategy_args) == Path("result/chestct_0p2_randaugment_resnet18.csv")
