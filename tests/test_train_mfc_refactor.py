@@ -241,6 +241,29 @@ def test_build_stats_rows_formats_metric_values(train_mfc):
     }
 
 
+def test_update_best_metrics_keeps_best_accuracy_for_best_f1(train_mfc):
+    current_best = {"accuracy": 0.75, "f1": 0.8}
+    weaker_metrics = {"accuracy": 0.9, "f1": 0.7}
+    stronger_metrics = {"accuracy": 0.82, "f1": 0.85}
+
+    best_metrics, best_f1 = train_mfc.update_best_metrics(weaker_metrics, current_best, 0.8)
+    assert best_metrics == current_best
+    assert best_f1 == pytest.approx(0.8)
+
+    best_metrics, best_f1 = train_mfc.update_best_metrics(stronger_metrics, best_metrics, best_f1)
+    assert best_metrics == stronger_metrics
+    assert best_f1 == pytest.approx(0.85)
+
+
+def test_format_test_epoch_metrics_includes_best_test_accuracy(train_mfc):
+    metrics = {"loss": 0.12345, "accuracy": 0.81234}
+    best_metrics = {"accuracy": 0.87654}
+
+    assert train_mfc.format_test_epoch_metrics(2, 5, metrics, best_metrics) == (
+        "Epoch [2/5] - Test Loss: 0.1235, Test Acc: 0.8123, Best Test Acc: 0.8765"
+    )
+
+
 def test_build_stats_csv_path_uses_parameterized_save_name(train_mfc):
     parser = train_mfc.build_parser()
 

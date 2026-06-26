@@ -337,6 +337,20 @@ def build_stats_csv_path(args):
     return Path('result') / f'{build_save_name(args)}.csv'
 
 
+def update_best_metrics(metrics, best_metrics, best_f1):
+    if metrics['f1'] > best_f1:
+        return metrics, metrics['f1']
+    return best_metrics, best_f1
+
+
+def format_test_epoch_metrics(epoch, max_epoch, metrics, best_metrics):
+    best_accuracy = best_metrics['accuracy'] if best_metrics is not None else metrics['accuracy']
+    return (
+        f'Epoch [{epoch}/{max_epoch}] - Test Loss: {metrics["loss"]:.4f}, '
+        f'Test Acc: {metrics["accuracy"]:.4f}, Best Test Acc: {best_accuracy:.4f}'
+    )
+
+
 def write_stats_csv(csv_filename, stats):
     with open(csv_filename, 'w', newline='') as csvfile:
         fieldnames = ['metric', 'mean', 'std', 'max', 'min']
@@ -438,7 +452,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
     max_epoch = args.num_epochs
     epoch_start = 1
     rs = {'train':[],'test':[]}
-    best_f1 = 0
+    best_f1 = -np.inf
     best_metrics = None
 
     traintest_dataset,test_dataset,resize_size,transform_train = get_data(
@@ -475,10 +489,8 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 metrics = run_epoch(model, testloader
                 , criterion, None, [], [], [])
                 rs['test'].append(metrics)
-                print(f'Epoch [{epoch}/{max_epoch}] - Test Loss: {metrics["loss"]:.4f}, Test Acc: {metrics["accuracy"]:.4f}')
-            if rs['test'][-1]['f1'] > best_f1:
-                best_f1 = rs['test'][-1]['f1']
-                best_metrics = rs['test'][-1]
+            best_metrics, best_f1 = update_best_metrics(rs['test'][-1], best_metrics, best_f1)
+            print(format_test_epoch_metrics(epoch, max_epoch, rs['test'][-1], best_metrics))
             if save_path:
                 # logger.info('save model@%d to %s' % (epoch, save_path))
                 
