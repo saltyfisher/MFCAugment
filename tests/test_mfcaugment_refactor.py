@@ -152,6 +152,7 @@ def test_build_mfc_params_includes_representative_groups_when_requested():
     )
 
     assert params["eval_groups"][0].tolist() == [4, 5, 2, 7, 9]
+    assert params["eval_group"][0].tolist() == [4, 5, 2, 7, 9]
     assert params["full_groups"] == groups
 
 
@@ -237,6 +238,59 @@ def test_eval_func_bayes_uses_representative_eval_groups(monkeypatch):
         "batch_size": 2,
         "groups": [np.array([0, 1, 2, 3])],
         "eval_groups": [np.array([1, 3])],
+        "pca": FakePCA(),
+        "w": 0,
+        "task_id": 0,
+        "Lb": np.array([0]),
+        "Ub": np.array([1]),
+        "args": args,
+        "model": "model",
+        "resize_size": (224, 224),
+        "n_op": 1,
+    }
+
+    loss = mfc.evalFuncBayes({"op_index": np.array([[0]])}, params)
+
+    assert loss == 0.0
+    np.testing.assert_allclose(seen_values, [63 / 255, 191 / 255])
+
+
+def test_eval_func_bayes_accepts_eval_group_alias(monkeypatch):
+    class FakeAugment:
+        def __init__(self, policy, num_ops):
+            self.policy = policy
+            self.num_ops = num_ops
+
+        def __call__(self, data):
+            return data
+
+    class FakePCA:
+        def transform(self, value):
+            return value
+
+    augmentations = types.ModuleType("core.augmentations")
+    augmentations.MyAugment = FakeAugment
+    utils = types.ModuleType("core.utils")
+    utils.KL_loss = lambda p, q: 0.0
+    utils.kl_divergence_multivariate_torch = lambda p, q: 0.0
+    seen_values = []
+
+    def fake_getdatafeat(args, resize_size, data_list, model):
+        seen_values.extend(float(item.item()) for item in data_list)
+        return [torch.ones(len(data_list), 2)], None
+
+    monkeypatch.setitem(sys.modules, "core.augmentations", augmentations)
+    monkeypatch.setitem(sys.modules, "core.utils", utils)
+    monkeypatch.setattr(mfc, "getdatafeat", fake_getdatafeat)
+
+    args = SimpleNamespace(gpu=False, device="cpu", resize=True, l=1)
+    params = {
+        "feat_extractor": "model",
+        "data_list": [torch.tensor(value) for value in [0.0, 0.25, 0.5, 0.75]],
+        "feat_list": np.ones((4, 2)),
+        "batch_size": 2,
+        "groups": [np.array([0, 1, 2, 3])],
+        "eval_group": [np.array([1, 3])],
         "pca": FakePCA(),
         "w": 0,
         "task_id": 0,

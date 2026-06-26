@@ -65,6 +65,14 @@ def load_policy_eval_dependencies():
     return MyAugment, KL_loss, kl_divergence_multivariate_torch
 
 
+def resolve_bayes_eval_groups(params):
+    if params.get('eval_groups') is not None:
+        return params['eval_groups']
+    if params.get('eval_group') is not None:
+        return params['eval_group']
+    return params['groups']
+
+
 def process_policy(args_tuple):
     """
     处理单个增强策略的函数
@@ -222,7 +230,7 @@ def evalFuncBayes(policy, params):
     data_list = params['data_list']
     feat_list = params['feat_list']
     batch_size = params['batch_size']
-    groups = params.get('eval_groups', params['groups'])
+    groups = resolve_bayes_eval_groups(params)
     pca = params['pca']
     w = params['w']
     group_id = params['task_id']
@@ -534,6 +542,7 @@ def build_mfc_params(
         'groups': groups,
         'full_groups': groups,
         'eval_groups': eval_groups,
+        'eval_group': eval_groups,
         'centers': centers,
         'pca': pca,
         'Lb': lb,
@@ -741,17 +750,15 @@ def reevaluate_top_policies_with_full_groups(trial_history, params, topk):
     if topk <= 0 or not trial_history:
         return []
 
-    original_eval_groups = params.get('eval_groups')
     eval_params = params.copy()
-    eval_params['eval_groups'] = params.get('full_groups', params['groups'])
+    full_groups = params.get('full_groups', params['groups'])
+    eval_params['eval_groups'] = full_groups
+    eval_params['eval_group'] = full_groups
 
     candidates = []
     for trial in trial_history[:topk]:
         full_loss = evalFuncBayes(trial['policy'], eval_params)
         candidates.append({'policy': trial['policy'], 'loss': full_loss})
-
-    if original_eval_groups is not None:
-        params['eval_groups'] = original_eval_groups
 
     return sorted(candidates, key=lambda x: x['loss'])
 
