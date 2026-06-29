@@ -253,7 +253,10 @@ def resolve_device(args):
         return torch.device('cpu')
     if not torch.cuda.is_available():
         raise RuntimeError('--gpu was requested, but CUDA is not available')
-    return torch.device(f'cuda:{args.device}')
+    if torch.cuda.device_count() > 1:
+        return torch.device('cuda')
+    else:
+        return torch.device(f'cuda:{args.device}')
 
 
 def create_model(args):
