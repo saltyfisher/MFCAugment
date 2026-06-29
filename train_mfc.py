@@ -38,6 +38,41 @@ def sample_ratio(value):
     return ratio
 
 
+def parse_bool_value(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {'1', 'true', 'yes', 'y', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'n', 'off'}:
+        return False
+    raise argparse.ArgumentTypeError(f'invalid boolean value: {value}')
+
+
+SUPPORTED_PARAMETER_TESTS = ('mfc_eval_sample_ratio', 'group', 'diff_c', 'l')
+PARAMETER_TEST_DEFAULT_VALUES = {
+    'mfc_eval_sample_ratio': [0.1, 0.2, 0.5],
+    'group': [False, True],
+    'diff_c': [False, True],
+    'l': [1, 2, 5],
+}
+PARAMETER_TEST_CONVERTERS = {
+    'mfc_eval_sample_ratio': sample_ratio,
+    'group': parse_bool_value,
+    'diff_c': parse_bool_value,
+    'l': int,
+}
+
+
+def parse_parameter_test_values(param_name, raw_values):
+    if param_name not in SUPPORTED_PARAMETER_TESTS:
+        raise ValueError(f'unsupported parameter test: {param_name}')
+
+    values = PARAMETER_TEST_DEFAULT_VALUES[param_name] if raw_values is None else raw_values
+    converter = PARAMETER_TEST_CONVERTERS[param_name]
+    return [converter(value) for value in values]
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description='Medical Image Classification with UncertaintyMixup')
     parser.add_argument('--data_dir', type=str, default='/workspace/MedicalImageClassification/',
@@ -82,6 +117,10 @@ def build_parser():
     parser.add_argument('--mag_bin', type=int, default=31, help='变换操作强度离散个数')
     parser.add_argument('--prob_bin', type=int, default=10, help='变换概率离散个数')
     parser.add_argument('--testing', action='store_true')
+    parser.add_argument('--param_test', type=str, default='', choices=SUPPORTED_PARAMETER_TESTS,
+                        help='测试单个参数变化对最终结果的影响')
+    parser.add_argument('--param_values', nargs='+', default=None,
+                        help='单参数测试的候选值；省略时使用内置默认候选值')
     return parser
 
 
@@ -533,7 +572,41 @@ def run_python_file(args):
     result.wait()
     return result.returncode
 
-def main(args):
+
+def copy_args_with_parameter(args, param_name, value):
+    variant_args = argparse.Namespace(**vars(args))
+    setattr(variant_args, param_name, value)
+    variant_args.param_test = ''
+    variant_args.param_values = None
+    return variant_args
+
+
+def build_parameter_sensitivity_csv_path(args, param_name):
+    return Path('result') / f'{build_save_name(args)}_sensitivity_{param_name}.csv'
+
+
+def write_parameter_sensitivity_csv(args, param_name, records):
+    csv_filename = build_parameter_sensitivity_csv_path(args, param_name)
+    with open(csv_filename, 'w', newline='') as csvfile:
+        fieldnames = ['parameter', 'value', 'metric', 'mean', 'std', 'max', 'min']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            for metric, values in record['stats'].items():
+                writer.writerow({
+                    'parameter': param_name,
+                    'value': record['value'],
+                    'metric': metric,
+                    'mean': values['mean'],
+                    'std': values['std'],
+                    'max': values['max'],
+                    'min': values['min'],
+                })
+    print(f"\n参数敏感性测试结果已保存到 {csv_filename}")
+    return csv_filename
+
+
+def run_trials(args):
     os.makedirs('result', exist_ok=True)
 
     all_trials_results = []
@@ -545,6 +618,36 @@ def main(args):
 
     summarize_trials(args, all_trials_results)
     return all_trials_results
+
+
+def run_parameter_sensitivity(args):
+    os.makedirs('result', exist_ok=True)
+    param_name = args.param_test
+    values = parse_parameter_test_values(param_name, args.param_values)
+    records = []
+
+    for value in values:
+        variant_args = copy_args_with_parameter(args, param_name, value)
+        print(f"\n{'='*50}")
+        print(f"参数敏感性测试: {param_name} = {value}")
+        print(f"{'='*50}")
+        trial_results = run_trials(variant_args)
+        stats = build_stats_rows(trial_results) if trial_results else {}
+        records.append({
+            'parameter': param_name,
+            'value': value,
+            'results': trial_results,
+            'stats': stats,
+        })
+
+    write_parameter_sensitivity_csv(args, param_name, records)
+    return records
+
+
+def main(args):
+    if args.param_test:
+        return run_parameter_sensitivity(args)
+    return run_trials(args)
 
 
 if __name__ == '__main__':

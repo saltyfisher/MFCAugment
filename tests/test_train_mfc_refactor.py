@@ -82,12 +82,43 @@ def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
     assert args.mfc_eval_sample_ratio == pytest.approx(0.25)
 
 
+def test_parser_accepts_single_parameter_sensitivity_options(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(
+        [
+            "--param_test",
+            "mfc_eval_sample_ratio",
+            "--param_values",
+            "0.1",
+            "0.3",
+            "0.5",
+        ]
+    )
+
+    assert args.param_test == "mfc_eval_sample_ratio"
+    assert args.param_values == ["0.1", "0.3", "0.5"]
+
+
 @pytest.mark.parametrize("ratio", ["0", "1", "1.2", "-0.1"])
 def test_parser_rejects_invalid_mfc_eval_sample_ratio(train_mfc, ratio):
     parser = train_mfc.build_parser()
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--mfc_eval_sample_ratio", ratio])
+
+
+def test_parse_parameter_test_values_converts_supported_types(train_mfc):
+    assert train_mfc.parse_parameter_test_values("mfc_eval_sample_ratio", ["0.1", "0.5"]) == [
+        pytest.approx(0.1),
+        pytest.approx(0.5),
+    ]
+    assert train_mfc.parse_parameter_test_values("group", ["false", "true"]) == [False, True]
+    assert train_mfc.parse_parameter_test_values("diff_c", ["0", "1"]) == [False, True]
+    assert train_mfc.parse_parameter_test_values("l", ["1", "3"]) == [1, 3]
+
+
+def test_parse_parameter_test_values_uses_defaults_when_values_are_omitted(train_mfc):
+    assert train_mfc.parse_parameter_test_values("group", None) == [False, True]
 
 
 @pytest.mark.parametrize(
@@ -204,6 +235,54 @@ def test_run_trial_uses_configured_data_dir(train_mfc, monkeypatch, tmp_path):
     assert captured["dataroot"] == "E:/Data/MedicalImage"
 
 
+def test_run_parameter_sensitivity_varies_one_parameter_at_a_time(train_mfc, monkeypatch):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(
+        [
+            "--param_test",
+            "group",
+            "--param_values",
+            "false",
+            "true",
+            "--diff_c",
+            "--l",
+            "3",
+        ]
+    )
+    calls = []
+    written = {}
+
+    def fake_run_trials(variant_args):
+        calls.append(
+            {
+                "group": variant_args.group,
+                "diff_c": variant_args.diff_c,
+                "l": variant_args.l,
+                "same_object": variant_args is args,
+            }
+        )
+        accuracy = 0.8 if variant_args.group else 0.6
+        return [{"accuracy": accuracy, "f1": accuracy - 0.1}]
+
+    def fake_write_csv(base_args, param_name, records):
+        written["param_name"] = param_name
+        written["values"] = [record["value"] for record in records]
+
+    monkeypatch.setattr(train_mfc, "run_trials", fake_run_trials)
+    monkeypatch.setattr(train_mfc, "write_parameter_sensitivity_csv", fake_write_csv)
+
+    records = train_mfc.run_parameter_sensitivity(args)
+
+    assert calls == [
+        {"group": False, "diff_c": True, "l": 3, "same_object": False},
+        {"group": True, "diff_c": True, "l": 3, "same_object": False},
+    ]
+    assert [record["value"] for record in records] == [False, True]
+    assert records[0]["stats"]["accuracy"]["mean"] == "0.6000"
+    assert records[1]["stats"]["accuracy"]["mean"] == "0.8000"
+    assert written == {"param_name": "group", "values": [False, True]}
+
+
 def test_refresh_mfc_policy_uses_true_groups_for_group_assignment(train_mfc, monkeypatch):
     mfc_module = sys.modules["core.MFCAugment"]
     monkeypatch.setattr(
@@ -282,7 +361,7 @@ def test_build_stats_csv_path_uses_parameterized_save_name(train_mfc):
         ]
     )
     assert train_mfc.build_stats_csv_path(mfc_args) == Path(
-        "result/breakhis_0p2_40X_mfc_resnet18_bayes_eval200_topk10_rep2_ratio0p5_group_diffc.csv"
+        "result/breakhis_0p2_40X_mfc_resnet18_bayes_eval100_topk10_rep2_ratio0p5_group_diffc.csv"
     )
 
     strategy_args = parser.parse_args(["--dataset", "chestct", "--strategy", "randaugment"])
