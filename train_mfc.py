@@ -38,6 +38,17 @@ def sample_ratio(value):
     return ratio
 
 
+def topk_ratio(value):
+    ratio = float(value)
+    if not 0.0 < ratio <= 1.0:
+        raise argparse.ArgumentTypeError('top-k ratio must be greater than 0 and less than or equal to 1')
+    return ratio
+
+
+def resolve_bayes_topk_count(topk_ratio_value, max_evals):
+    return max(1, int(np.ceil(topk_ratio_value * max_evals)))
+
+
 def parse_bool_value(value):
     if isinstance(value, bool):
         return value
@@ -107,7 +118,8 @@ def build_parser():
     parser.add_argument('--generative', action='store_true', help='是否在多任务算法中启用生成式模型')
     parser.add_argument('--bayes', action='store_true', help='是否在多任务算法中启用贝叶斯优化')
     parser.add_argument('--bayes_max_eval', type=int, default=100, help='贝叶斯优化最大迭代次数')
-    parser.add_argument('--bayes_topk', type=int, default=10, help='贝叶斯优化返回的策略数')
+    parser.add_argument('--bayes_topk', type=topk_ratio, default=0.1,
+                        help='贝叶斯优化候选策略复评比例，取值范围为(0, 1]')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数')
     parser.add_argument('--reevaluate_full_groups', type=parse_bool_value, default=True,
                         help='Bayes搜索结束后是否对top-k策略做全样本复评')

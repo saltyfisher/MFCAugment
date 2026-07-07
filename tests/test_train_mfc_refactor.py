@@ -73,6 +73,7 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     assert args.resize is True
     assert args.mfc is False
     assert args.mfc_eval_sample_ratio == pytest.approx(0.2)
+    assert args.bayes_topk == pytest.approx(0.1)
 
 
 def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
@@ -80,6 +81,27 @@ def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
     args = parser.parse_args(["--mfc_eval_sample_ratio", "0.25"])
 
     assert args.mfc_eval_sample_ratio == pytest.approx(0.25)
+
+
+def test_parser_accepts_bayes_topk_ratio(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--bayes_topk", "0.25"])
+
+    assert args.bayes_topk == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("ratio", ["0", "1.2", "-0.1"])
+def test_parser_rejects_invalid_bayes_topk_ratio(train_mfc, ratio):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--bayes_topk", ratio])
+
+
+def test_resolve_bayes_topk_count_uses_ratio_of_max_evals(train_mfc):
+    assert train_mfc.resolve_bayes_topk_count(0.25, 40) == 10
+    assert train_mfc.resolve_bayes_topk_count(0.01, 3) == 1
+    assert train_mfc.resolve_bayes_topk_count(1.0, 7) == 7
 
 
 def test_parser_controls_full_group_reevaluation(train_mfc):
@@ -203,7 +225,7 @@ def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):
             "--bayes_max_eval",
             "12",
             "--bayes_topk",
-            "3",
+            "0.25",
             "--bayes_rep",
             "1",
             "--testing",
@@ -213,7 +235,7 @@ def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):
     output = train_mfc.prepare_output_config(args)
 
     assert output.save_name == (
-        "breakhis_0p2_100X_mfc_resnet34_online_testing_bayes_eval12_topk3_rep1_ratio0p35"
+        "breakhis_0p2_100X_mfc_resnet34_online_testing_bayes_eval12_topk0p25_rep1_ratio0p35"
         "_group_diffc_proxy_GD"
     )
     assert output.save_path == Path("params_save") / "mfc"
@@ -379,7 +401,7 @@ def test_build_stats_csv_path_uses_parameterized_save_name(train_mfc):
         ]
     )
     assert train_mfc.build_stats_csv_path(mfc_args) == Path(
-        "result/breakhis_0p2_40X_mfc_resnet18_bayes_eval100_topk10_rep2_ratio0p5_group_diffc.csv"
+        "result/breakhis_0p2_40X_mfc_resnet18_bayes_eval100_topk0p1_rep2_ratio0p5_group_diffc.csv"
     )
 
     strategy_args = parser.parse_args(["--dataset", "chestct", "--strategy", "randaugment"])

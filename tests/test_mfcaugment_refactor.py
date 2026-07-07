@@ -394,6 +394,40 @@ def test_select_final_trial_history_uses_full_group_reevaluation_by_default(monk
     assert calls == [(trial_history, {"groups": [np.array([0])]}, 3)]
 
 
+def test_resolve_bayes_topk_count_uses_ratio_of_max_evals():
+    assert mfc.resolve_bayes_topk_count(0.25, 40) == 10
+    assert mfc.resolve_bayes_topk_count(0.01, 3) == 1
+    assert mfc.resolve_bayes_topk_count(1.0, 7) == 7
+
+
+def test_run_policy_search_passes_derived_bayes_topk(monkeypatch):
+    captured = {}
+
+    def fake_bayes(tasks, args, params, rep, topk, max_evals):
+        captured.update({"rep": rep, "topk": topk, "max_evals": max_evals})
+        return ["policy"]
+
+    monkeypatch.setattr(mfc, "bayesian_optimization_tasks_parallel", fake_bayes)
+
+    result, skill_factor = mfc.run_policy_search(
+        args=SimpleNamespace(
+            multitask=False,
+            bayes=True,
+            bayes_rep=2,
+            bayes_topk=0.25,
+            bayes_max_eval=40,
+        ),
+        tasks=["task"],
+        options={},
+        params={},
+        writer=[],
+    )
+
+    assert result == ["policy"]
+    assert skill_factor is None
+    assert captured == {"rep": 2, "topk": 10, "max_evals": 40}
+
+
 def test_bayesian_parallel_passes_independent_params_per_task(monkeypatch):
     seen = []
 

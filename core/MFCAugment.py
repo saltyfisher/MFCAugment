@@ -593,12 +593,13 @@ def run_policy_search(args, tasks, options, params, writer):
         return best_pop, skill_factor
 
     if args.bayes:
+        best_topk = resolve_bayes_topk_count(args.bayes_topk, args.bayes_max_eval)
         best_policy = bayesian_optimization_tasks_parallel(
             tasks,
             args,
             params,
             rep=args.bayes_rep,
-            topk=args.bayes_topk,
+            topk=best_topk,
             max_evals=args.bayes_max_eval,
         )
         return best_policy, None
@@ -761,6 +762,10 @@ def reevaluate_top_policies_with_full_groups(trial_history, params, topk):
         candidates.append({'policy': trial['policy'], 'loss': full_loss})
 
     return sorted(candidates, key=lambda x: x['loss'])
+
+
+def resolve_bayes_topk_count(topk_ratio_value, max_evals):
+    return max(1, int(np.ceil(topk_ratio_value * max_evals)))
 
 
 def select_final_trial_history(trial_history, args, params, topk):
