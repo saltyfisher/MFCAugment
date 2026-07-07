@@ -109,6 +109,10 @@ def build_parser():
     parser.add_argument('--bayes_max_eval', type=int, default=100, help='贝叶斯优化最大迭代次数')
     parser.add_argument('--bayes_topk', type=int, default=10, help='贝叶斯优化返回的策略数')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数')
+    parser.add_argument('--reevaluate_full_groups', type=parse_bool_value, default=True,
+                        help='Bayes搜索结束后是否对top-k策略做全样本复评')
+    parser.add_argument('--no_reevaluate_full_groups', dest='reevaluate_full_groups', action='store_false',
+                        help='关闭Bayes top-k策略的全样本复评')
     parser.add_argument('--mfc_eval_sample_ratio', type=sample_ratio, default=0.2,
                         help='Bayes搜索阶段每个子集使用的代表样本比例，取值范围为(0, 1)')
     parser.add_argument('--group', action='store_true', help='每个数据子集是否单独适配增广策略')
@@ -246,6 +250,8 @@ def build_save_name(args):
                 f'rep{format_name_value(args.bayes_rep)}',
                 f'ratio{format_name_value(args.mfc_eval_sample_ratio)}',
             ])
+            if not getattr(args, 'reevaluate_full_groups', True):
+                parts.append('nofullreeval')
         if args.group:
             parts.append('group')
         if args.diff_c:

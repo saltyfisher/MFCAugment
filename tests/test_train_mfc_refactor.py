@@ -82,6 +82,17 @@ def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
     assert args.mfc_eval_sample_ratio == pytest.approx(0.25)
 
 
+def test_parser_controls_full_group_reevaluation(train_mfc):
+    parser = train_mfc.build_parser()
+    default_args = parser.parse_args([])
+    explicit_false_args = parser.parse_args(["--reevaluate_full_groups", "false"])
+    flag_false_args = parser.parse_args(["--no_reevaluate_full_groups"])
+
+    assert default_args.reevaluate_full_groups is True
+    assert explicit_false_args.reevaluate_full_groups is False
+    assert flag_false_args.reevaluate_full_groups is False
+
+
 def test_parser_accepts_single_parameter_sensitivity_options(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args(
@@ -210,6 +221,13 @@ def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):
     assert args.save_name == output.save_name
     assert args.proxy_log_path == output.log_path / "proxy"
     assert args.GD_save_path == output.save_path / "GD"
+
+
+def test_build_save_name_marks_disabled_full_group_reevaluation(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--mfc", "--bayes", "--reevaluate_full_groups", "false"])
+
+    assert "nofullreeval" in train_mfc.build_save_name(args)
 
 
 def test_run_trial_uses_configured_data_dir(train_mfc, monkeypatch, tmp_path):

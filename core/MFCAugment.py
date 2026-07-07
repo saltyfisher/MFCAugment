@@ -763,6 +763,14 @@ def reevaluate_top_policies_with_full_groups(trial_history, params, topk):
     return sorted(candidates, key=lambda x: x['loss'])
 
 
+def select_final_trial_history(trial_history, args, params, topk):
+    if getattr(args, 'reevaluate_full_groups', True):
+        return reevaluate_top_policies_with_full_groups(trial_history, params, topk)
+    if topk <= 0:
+        return []
+    return trial_history[:topk]
+
+
 def merge_trial_policies(trial_history, use_prob):
     if not trial_history:
         return {'op_index': np.empty((0, 0), dtype=int), 'prob_index': [], 'magnitude_index': []}
@@ -999,7 +1007,7 @@ def bayesian_optimization_single_task(task_idx, args, task, params, rep=1, topk=
                 show_progressbar=False,
                 verbose=False)
     trial_history = sorted(trial_history, key=lambda x: x['loss'], reverse=False)
-    final_trial_history = reevaluate_top_policies_with_full_groups(trial_history, params, topk)
+    final_trial_history = select_final_trial_history(trial_history, args, params, topk)
     final_policies = merge_trial_policies(final_trial_history, args.use_prob)
     best_loss = final_trial_history[0]['loss'] if final_trial_history else trial_history[0]['loss']
     elapsed_time = time.time() - st

@@ -349,6 +349,51 @@ def test_reevaluate_top_policies_uses_full_groups_and_restores_eval_groups(monke
     assert [group.tolist() for _, group in calls] == [[0, 1, 2, 3], [0, 1, 2, 3]]
 
 
+def test_select_final_trial_history_skips_full_group_reevaluation_when_disabled(monkeypatch):
+    trial_history = [
+        {"policy": {"op_index": np.array([[0]])}, "loss": 0.1},
+        {"policy": {"op_index": np.array([[1]])}, "loss": 0.2},
+    ]
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("full-group reevaluation should be skipped")
+
+    monkeypatch.setattr(mfc, "reevaluate_top_policies_with_full_groups", fail_if_called)
+
+    selected = mfc.select_final_trial_history(
+        trial_history,
+        args=SimpleNamespace(reevaluate_full_groups=False),
+        params={"groups": [np.array([0])]},
+        topk=1,
+    )
+
+    assert selected == [trial_history[0]]
+
+
+def test_select_final_trial_history_uses_full_group_reevaluation_by_default(monkeypatch):
+    trial_history = [
+        {"policy": {"op_index": np.array([[0]])}, "loss": 0.1},
+    ]
+    selected_history = [{"policy": {"op_index": np.array([[1]])}, "loss": 0.05}]
+    calls = []
+
+    def fake_reevaluate(history, params, topk):
+        calls.append((history, params, topk))
+        return selected_history
+
+    monkeypatch.setattr(mfc, "reevaluate_top_policies_with_full_groups", fake_reevaluate)
+
+    selected = mfc.select_final_trial_history(
+        trial_history,
+        args=SimpleNamespace(),
+        params={"groups": [np.array([0])]},
+        topk=3,
+    )
+
+    assert selected == selected_history
+    assert calls == [(trial_history, {"groups": [np.array([0])]}, 3)]
+
+
 def test_bayesian_parallel_passes_independent_params_per_task(monkeypatch):
     seen = []
 
