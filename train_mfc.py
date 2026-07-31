@@ -95,9 +95,17 @@ def parse_policy_pool_source(value):
     return value
 
 
+def parse_mfc_eval_metric(value):
+    value = str(value).lower()
+    if value not in {'kl', 'mmd'}:
+        raise argparse.ArgumentTypeError(f'invalid MFC eval metric: {value}')
+    return value
+
+
 SUPPORTED_PARAMETER_TESTS = (
     'mfc_eval_sample_ratio',
     'mfc_eval_sampling',
+    'mfc_eval_metric',
     'policy_pool_source',
     'group',
     'diff_c',
@@ -109,6 +117,7 @@ SUPPORTED_PARAMETER_TESTS = (
 PARAMETER_TEST_DEFAULT_VALUES = {
     'mfc_eval_sample_ratio': [0.1, 0.2, 0.5],
     'mfc_eval_sampling': ['representative', 'uniform'],
+    'mfc_eval_metric': ['kl', 'mmd'],
     'policy_pool_source': ['search', 'random'],
     'group': [False, True],
     'diff_c': [False, True],
@@ -120,6 +129,7 @@ PARAMETER_TEST_DEFAULT_VALUES = {
 PARAMETER_TEST_CONVERTERS = {
     'mfc_eval_sample_ratio': sample_ratio,
     'mfc_eval_sampling': parse_eval_sampling_value,
+    'mfc_eval_metric': parse_mfc_eval_metric,
     'policy_pool_source': parse_policy_pool_source,
     'group': parse_bool_value,
     'diff_c': parse_bool_value,
@@ -188,6 +198,8 @@ def build_parser():
                         help='Bayes搜索阶段每个子集使用的代表样本比例，取值范围为(0, 1)')
     parser.add_argument('--mfc_eval_sampling', type=parse_eval_sampling_value, default='representative',
                         help='Bayes搜索阶段评估子集采样方式')
+    parser.add_argument('--mfc_eval_metric', type=parse_mfc_eval_metric, default='kl',
+                        help='Bayes搜索阶段增广数据分布评估函数：kl或mmd')
     parser.add_argument('--mfc_eval_sample_seed', type=int, default=0,
                         help='Bayes搜索阶段均匀评估子采样随机种子')
     parser.add_argument('--mfc_refresh_interval', type=positive_int, default=40,
@@ -334,6 +346,7 @@ def build_save_name(args):
                 f'rep{format_name_value(args.bayes_rep)}',
                 f'ratio{format_name_value(args.mfc_eval_sample_ratio)}',
             ])
+            add_non_default_part(parts, args, 'mfc_eval_metric', 'kl', 'metric')
             if args.policy_pool_source != 'search':
                 parts.append(f'pool{args.policy_pool_source}')
                 add_non_default_part(parts, args, 'policy_pool_seed', 0, 'poolseed')

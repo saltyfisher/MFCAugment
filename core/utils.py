@@ -382,6 +382,46 @@ def KL_loss(p, q):
     loss = np.round(loss, 4)
     return loss
 
+
+def _as_2d_float_tensor(samples, device=None):
+    if isinstance(samples, torch.Tensor):
+        tensor = samples.detach().float()
+    else:
+        tensor = torch.as_tensor(np.asarray(samples), dtype=torch.float32)
+    if device is not None:
+        tensor = tensor.to(device)
+    if tensor.ndim == 1:
+        tensor = tensor.reshape(-1, 1)
+    return tensor
+
+
+def _median_bandwidth_squared(samples):
+    distances = torch.cdist(samples, samples, p=2).pow(2)
+    positive_distances = distances[distances > 0]
+    if positive_distances.numel() == 0:
+        return torch.tensor(1.0, device=samples.device)
+    return torch.clamp(torch.median(positive_distances), min=1e-12)
+
+
+def MMD_loss(p, q, bandwidth=None):
+    p = _as_2d_float_tensor(p)
+    q = _as_2d_float_tensor(q, device=p.device)
+    assert p.shape[1] == q.shape[1], "p and q must have the same number of features"
+
+    combined = torch.cat([p, q], dim=0)
+    bandwidth_squared = (
+        torch.as_tensor(float(bandwidth), dtype=torch.float32, device=p.device).pow(2)
+        if bandwidth is not None
+        else _median_bandwidth_squared(combined)
+    )
+
+    gamma = 1.0 / (2.0 * bandwidth_squared)
+    k_pp = torch.exp(-gamma * torch.cdist(p, p, p=2).pow(2)).mean()
+    k_qq = torch.exp(-gamma * torch.cdist(q, q, p=2).pow(2)).mean()
+    k_pq = torch.exp(-gamma * torch.cdist(p, q, p=2).pow(2)).mean()
+    loss = torch.clamp(k_pp + k_qq - 2.0 * k_pq, min=0.0)
+    return float(loss.item())
+
 def KL_loss_intergroup(p, q, idx):
     loss = [w[idx][j]*KL_loss(p,q) for j in range(w.shape[0])]
     return loss

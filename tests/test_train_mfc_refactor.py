@@ -79,6 +79,7 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     assert args.policy_pool_source == "search"
     assert args.policy_pool_seed == 0
     assert args.mfc_refresh_interval == 40
+    assert args.mfc_eval_metric == "kl"
     assert args.uncertainty == "entropy"
     assert args.subset_sigma == pytest.approx(0.15)
 
@@ -96,6 +97,20 @@ def test_parser_accepts_mfc_eval_sampling_mode_and_seed(train_mfc):
 
     assert args.mfc_eval_sampling == "uniform"
     assert args.mfc_eval_sample_seed == 13
+
+
+def test_parser_accepts_mfc_eval_metric(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--mfc_eval_metric", "mmd"])
+
+    assert args.mfc_eval_metric == "mmd"
+
+
+def test_parser_rejects_invalid_mfc_eval_metric(train_mfc):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--mfc_eval_metric", "wasserstein"])
 
 
 def test_parser_rejects_invalid_mfc_eval_sampling_mode(train_mfc):
@@ -218,6 +233,7 @@ def test_parse_parameter_test_values_converts_supported_types(train_mfc):
         "representative",
         "uniform",
     ]
+    assert train_mfc.parse_parameter_test_values("mfc_eval_metric", ["kl", "mmd"]) == ["kl", "mmd"]
     assert train_mfc.parse_parameter_test_values("policy_pool_source", ["search", "random"]) == [
         "search",
         "random",

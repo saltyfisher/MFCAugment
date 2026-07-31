@@ -61,9 +61,9 @@ class SingleTask(object):
 
 def load_policy_eval_dependencies():
     from core.augmentations import MyAugment
-    from core.utils import KL_loss, kl_divergence_multivariate_torch
+    from core.utils import KL_loss, MMD_loss, kl_divergence_multivariate_torch
 
-    return MyAugment, KL_loss, kl_divergence_multivariate_torch
+    return MyAugment, KL_loss, MMD_loss, kl_divergence_multivariate_torch
 
 
 def resolve_bayes_eval_groups(params):
@@ -74,7 +74,7 @@ def resolve_bayes_eval_groups(params):
     return params['groups']
 
 def evalFuncBayes(policy, params):
-    MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
+    MyAugment, KL_loss, MMD_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
 
     data_list = params['data_list']
     feat_list = params['feat_list']
@@ -97,7 +97,11 @@ def evalFuncBayes(policy, params):
     else:
         aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
     aug_feat = pca.transform(aug_feat)
-    if args.gpu:
+    eval_metric = getattr(args, 'mfc_eval_metric', 'kl')
+    if eval_metric == 'mmd':
+        loss1 = MMD_loss(feat_list, aug_feat)
+        loss2 = MMD_loss(feat_list[groups[group_id]], aug_feat)
+    elif args.gpu:
         loss1 = kl_divergence_multivariate_torch(feat_list, aug_feat)
         loss2 = kl_divergence_multivariate_torch(feat_list[groups[group_id]], aug_feat)
     else:

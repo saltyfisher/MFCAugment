@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core import MFCAugment as mfc
+from core import utils as core_utils
 
 
 def test_build_search_bounds_without_probability_dimension():
@@ -368,6 +369,7 @@ def test_eval_func_bayes_uses_representative_eval_groups(monkeypatch):
     augmentations.MyAugment = FakeAugment
     utils = types.ModuleType("core.utils")
     utils.KL_loss = lambda p, q: 0.0
+    utils.MMD_loss = lambda p, q: 0.0
     utils.kl_divergence_multivariate_torch = lambda p, q: 0.0
     seen_values = []
 
@@ -404,6 +406,60 @@ def test_eval_func_bayes_uses_representative_eval_groups(monkeypatch):
     np.testing.assert_allclose(seen_values, [63 / 255, 191 / 255])
 
 
+def test_eval_func_bayes_can_use_mmd_metric(monkeypatch):
+    class FakeAugment:
+        def __init__(self, policy, num_ops):
+            self.policy = policy
+            self.num_ops = num_ops
+
+        def __call__(self, data):
+            return data
+
+    class FakePCA:
+        def transform(self, value):
+            return value
+
+    augmentations = types.ModuleType("core.augmentations")
+    augmentations.MyAugment = FakeAugment
+    utils = types.ModuleType("core.utils")
+    calls = []
+    utils.KL_loss = lambda p, q: (_ for _ in ()).throw(AssertionError("KL should not be used"))
+    utils.kl_divergence_multivariate_torch = lambda p, q: (_ for _ in ()).throw(AssertionError("KL should not be used"))
+
+    def fake_mmd(p, q):
+        calls.append((np.asarray(p).shape, np.asarray(q).shape))
+        return 3.0 if len(calls) == 1 else 1.0
+
+    utils.MMD_loss = fake_mmd
+
+    monkeypatch.setitem(sys.modules, "core.augmentations", augmentations)
+    monkeypatch.setitem(sys.modules, "core.utils", utils)
+    monkeypatch.setattr(
+        mfc,
+        "getdatafeat",
+        lambda args, resize_size, data_list, model: ([torch.ones(len(data_list), 2)], None),
+    )
+
+    args = SimpleNamespace(gpu=False, device="cpu", resize=True, l=2, mfc_eval_metric="mmd")
+    params = {
+        "data_list": [torch.tensor(value) for value in [0.0, 0.25, 0.5, 0.75]],
+        "feat_list": np.ones((4, 2)),
+        "groups": [np.array([0, 1, 2, 3])],
+        "eval_groups": [np.array([1, 3])],
+        "pca": FakePCA(),
+        "task_id": 0,
+        "args": args,
+        "model": "model",
+        "resize_size": (224, 224),
+        "n_op": 1,
+    }
+
+    loss = mfc.evalFuncBayes({"op_index": np.array([[0]])}, params)
+
+    assert loss == pytest.approx(1.0)
+    assert calls == [((4, 2), (2, 2)), ((2, 2), (2, 2))]
+
+
 def test_eval_func_bayes_accepts_eval_group_alias(monkeypatch):
     class FakeAugment:
         def __init__(self, policy, num_ops):
@@ -421,6 +477,7 @@ def test_eval_func_bayes_accepts_eval_group_alias(monkeypatch):
     augmentations.MyAugment = FakeAugment
     utils = types.ModuleType("core.utils")
     utils.KL_loss = lambda p, q: 0.0
+    utils.MMD_loss = lambda p, q: 0.0
     utils.kl_divergence_multivariate_torch = lambda p, q: 0.0
     seen_values = []
 
@@ -455,6 +512,14 @@ def test_eval_func_bayes_accepts_eval_group_alias(monkeypatch):
 
     assert loss == 0.0
     np.testing.assert_allclose(seen_values, [63 / 255, 191 / 255])
+
+
+def test_mmd_loss_is_zero_for_identical_samples_and_positive_for_shifted_samples():
+    samples = np.array([[0.0], [1.0], [2.0]])
+    shifted = samples + 3.0
+
+    assert core_utils.MMD_loss(samples, samples) == pytest.approx(0.0)
+    assert core_utils.MMD_loss(samples, shifted) > 0.0
 
 
 def test_build_task_params_copies_base_params_without_mutating_source():
