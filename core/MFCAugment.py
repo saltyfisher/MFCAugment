@@ -8,6 +8,7 @@ import datetime
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.model_selection import StratifiedShuffleSplit
+from scipy.stats import rankdata
 
 
 logging.getLogger('hyperopt').setLevel(logging.WARNING)
@@ -72,175 +73,17 @@ def resolve_bayes_eval_groups(params):
         return params['eval_group']
     return params['groups']
 
-
-def process_policy(args_tuple):
-    """
-    处理单个增强策略的函数
-    """
-    MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
-    p, data, args, num_ops, resize_size, model, pca, feat_list, groups, group_id = args_tuple
-    
-    aug = MyAugment(p, num_ops)
-    aug_data = [aug(d) for d in data]
-    aug_feat, _ = getdatafeat(args, resize_size, aug_data, model)
-    
-    if args.gpu:
-        aug_feat = torch.cat(aug_feat).detach()
-    else:
-        aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
-    
-    aug_feat = pca.transform(aug_feat)
-    
-    if args.gpu:
-        # loss1 = kl_divergence_kde(feat_list, aug_feat)
-        # loss2 = kl_divergence_kde(feat_list[groups[group_id]], policy_feat)
-        loss1 = kl_divergence_multivariate_torch(feat_list, aug_feat)
-        loss2 = kl_divergence_multivariate_torch(feat_list[groups[group_id]], aug_feat)
-    else:
-        loss1 = KL_loss(feat_list, aug_feat)
-        loss2 = KL_loss(feat_list[groups[group_id]], aug_feat)
-        
-    l = 1
-    loss = loss1 - l * loss2
-    return loss 
-
-def evalFuncBatch(policies, params):
-    """
-    批量评估函数，将所有个体的增强数据合并后批量处理以提高效率
-    """
-    feat_extractor = params['feat_extractor']
-    data_list = params['data_list']
-    feat_list = params['feat_list']
-    batch_size = params['batch_size']
-    groups = params['groups']
-    pca = params['pca']
-    w = params['w']
-    group_id = params['task_id']
-    Lb = params['Lb']
-    Ub = params['Ub']
-    args = params['args']
-    model = params['model']
-    resize_size = params['resize_size']
-    batch_size = 24
-    # 格式化所有策略
-    formatted_policies = [formatPolicy(params, p, verbose=True)[0] for p in policies]
-    # 为每个策略生成增强数据
-    data = [data_list[i] for i in groups[group_id]]
-    all_losses = []
-
-    process_args = [
-        (p, data, args, params['n_op'], resize_size, model, pca, feat_list, groups, group_id)
-        for p in formatted_policies
-    ]
-    
-    # 使用ThreadPoolExecutor进行并行处理
-    st = time.time()
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        # 提交所有任务
-        future_to_policy = {
-            executor.submit(process_policy, args_tuple): i 
-            for i, args_tuple in enumerate(process_args)
-        }
-        
-        # 收集结果
-        results = {}
-        for future in as_completed(future_to_policy):
-            index = future_to_policy[future]
-            result = future.result()
-            results[index] = result
-        
-        # 按顺序排列结果
-        all_losses = [results[i] for i in sorted(results.keys())]    
-    return all_losses
-
-def evalFunc(policy, params):
-    MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
-
-    feat_extractor = params['feat_extractor']
-    data_list = params['data_list']
-    feat_list = params['feat_list']
-    batch_size = params['batch_size']
-    groups = params['groups']
-    pca = params['pca']
-    w = params['w']
-    group_id = params['task_id']
-    Lb = params['Lb']
-    Ub = params['Ub']
-    args = params['args']
-    model = params['model']
-    resize_size = params['resize_size']
-    # policy = np.floor(policy*(Ub-Lb)+Lb)
-    policy = formatPolicy(params, policy)
-    aug = MyAugment(policy[0],num_ops=params['n_op'])
-    aug_data = []
-    data = [data_list[i] for i in groups[group_id]]
-    for d in data:
-        aug_data.append(aug(d))
-    aug_feat, _ = getdatafeat(args,resize_size,aug_data,model)
-    if args.gpu:
-        aug_feat = torch.cat(aug_feat).detach()
-    else:
-        aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
-    # if args.resize:
-    #     aug_feat = get_deepfeat(args, config['model'],feat_extractor, aug_imgs).cpu().numpy()
-    # else:
-    #         feat = [get_deepfeat(args, config['model'],feat_extractor,img.unsqueeze(0)) for img in aug_imgs]
-    #         feat = torch.cat(feat, dim=0)
-    #         aug_feat.append(feat)
-    #     aug_feat = torch.cat(aug_feat, dim=0).cpu().numpy()
-    aug_feat = pca.transform(aug_feat)
-    st = time.time()
-    if args.gpu:
-        # loss1 = Sinkhorn_dist(feat_list, aug_feat)
-        # loss2 = Sinkhorn_dist(feat_list[groups[group_id]], aug_feat)
-        # loss1 = kl_divergence_kde(feat_list, aug_feat)
-        # loss2 = kl_divergence_kde(feat_list[groups[group_id]], aug_feat)
-        loss1 = kl_divergence_multivariate_torch(feat_list, aug_feat)
-        loss2 = kl_divergence_multivariate_torch(feat_list[groups[group_id]], aug_feat)
-    else:
-        loss1 = KL_loss(feat_list, aug_feat)
-        loss2 = KL_loss(feat_list[groups[group_id]], aug_feat)
-    # print(time.time()-st)
-    # if 'Chest' in args.save_name:
-    #     loss1 = Sinkhorn_dist(feat_list, aug_feat)
-    #     loss2 = Sinkhorn_dist(feat_list[groups[group_id]], aug_feat)
-    # else:
-    #     loss1 = KL_loss(feat_list, aug_feat)
-    #     loss2 = KL_loss(feat_list[groups[group_id]], aug_feat)
-    l = args.l
-    # if 'Chest' in args.save_name:
-    #     l = 10
-    # else:
-    #     l = 1
-    # loss3 = 0
-    # for i in range(len(groups)):
-    #     if i != group_id:
-    #         loss3 += KL_loss(feat_list[groups[i]], aug_feat)
-    # loss = loss1 - l*loss2 + loss3
-    loss = loss1 - l*loss2
-    # print(f'loss1: {loss1}, loss2: {loss2}')
-    # print(loss)
-    # loss = loss2
-    return loss
-
 def evalFuncBayes(policy, params):
     MyAugment, KL_loss, kl_divergence_multivariate_torch = load_policy_eval_dependencies()
 
-    feat_extractor = params['feat_extractor']
     data_list = params['data_list']
     feat_list = params['feat_list']
-    batch_size = params['batch_size']
     groups = resolve_bayes_eval_groups(params)
     pca = params['pca']
-    w = params['w']
     group_id = params['task_id']
-    Lb = params['Lb']
-    Ub = params['Ub']
     args = params['args']
     model = params['model']
     resize_size = params['resize_size']
-    # policy = np.floor(policy*(Ub-Lb)+Lb)
-    # policy = formatPolicy(params, policy)
     aug = MyAugment(policy,num_ops=params['n_op'])
     aug_data = []
     data = [data_list[i] for i in groups[group_id]]
@@ -253,47 +96,14 @@ def evalFuncBayes(policy, params):
         aug_feat = torch.cat(aug_feat).detach()
     else:
         aug_feat = torch.cat(aug_feat).detach().cpu().numpy()
-    # if args.resize:
-    #     aug_feat = get_deepfeat(args, config['model'],feat_extractor, aug_imgs).cpu().numpy()
-    # else:
-    #         feat = [get_deepfeat(args, config['model'],feat_extractor,img.unsqueeze(0)) for img in aug_imgs]
-    #         feat = torch.cat(feat, dim=0)
-    #         aug_feat.append(feat)
-    #     aug_feat = torch.cat(aug_feat, dim=0).cpu().numpy()
     aug_feat = pca.transform(aug_feat)
-    st = time.time()
     if args.gpu:
-        # loss1 = Sinkhorn_dist(feat_list, aug_feat)
-        # loss2 = Sinkhorn_dist(feat_list[groups[group_id]], aug_feat)
-        # loss1 = kl_divergence_kde(feat_list, aug_feat)
-        # loss2 = kl_divergence_kde(feat_list[groups[group_id]], aug_feat)
         loss1 = kl_divergence_multivariate_torch(feat_list, aug_feat)
         loss2 = kl_divergence_multivariate_torch(feat_list[groups[group_id]], aug_feat)
     else:
         loss1 = KL_loss(feat_list, aug_feat)
         loss2 = KL_loss(feat_list[groups[group_id]], aug_feat)
-    # print(time.time()-st)
-    # if 'Chest' in args.save_name:
-    #     loss1 = Sinkhorn_dist(feat_list, aug_feat)
-    #     loss2 = Sinkhorn_dist(feat_list[groups[group_id]], aug_feat)
-    # else:
-    #     loss1 = KL_loss(feat_list, aug_feat)
-    #     loss2 = KL_loss(feat_list[groups[group_id]], aug_feat)
-    l = args.l
-    # if 'Chest' in args.save_name:
-    #     l = 10
-    # else:
-    #     l = 1
-    # loss3 = 0
-    # for i in range(len(groups)):
-    #     if i != group_id:
-    #         loss3 += KL_loss(feat_list[groups[i]], aug_feat)
-    # loss = loss1 - l*loss2 + loss3
-    loss = loss1 - l*loss2
-    # print(f'loss1: {loss1}, loss2: {loss2}')
-    # print(loss)
-    # loss = loss2
-    return loss
+    return loss1 - args.l * loss2
 
 def evalFuncProxy(policy, params):
     group_id = params['task_id']
@@ -342,39 +152,109 @@ def cluster_data(feat_list, label_list, n_clusters):
     return groups, centers
 
 
+def normalize_sampling_weights(scores):
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+    scores = np.clip(scores, 0.0, None)
+    total_score = np.sum(scores)
+    if total_score <= 0.0:
+        return np.full(scores.shape, 1.0 / len(scores))
+    return scores / total_score
+
+
+def uncertainty_scores(probabilities, label_list, uncertainty):
+    probabilities = np.clip(probabilities, 1e-12, 1.0)
+    entropy = np.sum(-probabilities * np.log(probabilities), axis=1)
+    if uncertainty == 'entropy':
+        return entropy
+
+    true_class_probabilities = probabilities[np.arange(probabilities.shape[0]), label_list]
+    negative_log_likelihood = -np.log(true_class_probabilities)
+    if uncertainty == 'nll':
+        return negative_log_likelihood
+    if uncertainty == 'product':
+        return negative_log_likelihood * entropy
+    raise ValueError(f'unsupported uncertainty metric: {uncertainty}')
+
+
 def sample_weight_centers(weights, center_count, diff_c):
     draw_count = center_count if diff_c else 1
     center_indices = np.random.choice(len(weights), draw_count, p=weights)
-    centers = weights[np.asarray(center_indices)]
     if not diff_c:
-        centers = np.repeat(centers, center_count)
-    return centers
+        center_indices = np.repeat(center_indices, center_count)
+    return np.asarray(center_indices)
 
-def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
-    groups = []
+def rank_histogram(rank_values, bins=10):
+    counts, _ = np.histogram(rank_values, bins=bins, range=(0.0, 1.0))
+    return counts.astype(int).tolist()
+
+
+def pairwise_iou(groups):
+    ratios = []
+    for i in range(len(groups)):
+        left = set(np.asarray(groups[i]).tolist())
+        for j in range(i + 1, len(groups)):
+            right = set(np.asarray(groups[j]).tolist())
+            union_size = len(left | right)
+            ratios.append(0.0 if union_size == 0 else len(left & right) / union_size)
+    return ratios
+
+
+def log_weighted_cluster_diagnostics(
+    probability_ratios,
+    rank_means,
+    rank_histograms,
+    center_ranks,
+    uncertainty,
+    subset_sigma,
+):
+    logger = logging.getLogger('MFC')
+    ratio_text = ', '.join(f'{ratio:.3g}' for ratio in probability_ratios)
+    rank_text = ', '.join(f'{rank_mean:.3f}' for rank_mean in rank_means)
+    center_text = ', '.join(f'{center_rank:.3f}' for center_rank in center_ranks)
+    logger.info(
+        'MFC subset sampling diagnostics | uncertainty=%s | subset_sigma=%.3g | '
+        'probability max/min=[%s] | center ranks=[%s] | sampled mean ranks=[%s] | rank histograms=%s',
+        uncertainty,
+        subset_sigma,
+        ratio_text,
+        center_text,
+        rank_text,
+        rank_histograms,
+    )
+
+
+def log_group_overlap_diagnostics(groups, true_groups):
+    logger = logging.getLogger('MFC')
+    sampled_iou = pairwise_iou(groups)
+    assigned_iou = pairwise_iou(true_groups)
+    logger.info(
+        'MFC subset overlap diagnostics | sampled pairwise IoU=%s | assigned pairwise IoU=%s',
+        [round(value, 4) for value in sampled_iou],
+        [round(value, 4) for value in assigned_iou],
+    )
+
+
+def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c, uncertainty='entropy', subset_sigma=0.15):
     sample_num = int(feat_list.shape[0]/n_clusters)
     # sample_num = int(feat_list.shape[0] * 0.8)
     sample_counts = n_clusters
     label_list = np.array(label_list)
     if isinstance(feat_list, torch.Tensor):
         feat_list = feat_list.cpu().numpy()
-    probabilities = np.clip(feat_list, 1e-12, 1.0)
-    true_class_probabilities = probabilities[np.arange(probabilities.shape[0]), label_list]
-    negative_log_likelihood = -np.log(true_class_probabilities)
-    entropy = np.sum(-probabilities * np.log(probabilities), axis=1)
-    weights = negative_log_likelihood * entropy
-    weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
-    weights = np.clip(weights, 0.0, None)
-    total_weight = np.sum(weights)
-    if total_weight <= 0.0:
-        weights = np.full(weights.shape, 1.0 / len(weights))
-    else:
-        weights = weights / total_weight
-    mu = sample_weight_centers(weights, sample_counts, diff_c)
+
+    scores = uncertainty_scores(feat_list, label_list, uncertainty)
+    weights = normalize_sampling_weights(scores)
+    rank_u = rankdata(scores, method='average') / len(scores)
+    center_indices = sample_weight_centers(weights, sample_counts, diff_c)
+    mu = rank_u[center_indices]
     groups = []
+    probability_ratios = []
+    rank_means = []
+    rank_histograms = []
     for i in range(sample_counts):
-        w = 1 / (np.sqrt(2 * np.pi)) * np.exp(- (weights - mu[i]) ** 2 / 2)
+        w = np.exp(- (rank_u - mu[i]) ** 2 / (2 * subset_sigma ** 2))
         w = w / np.sum(w)
+        probability_ratios.append(float(np.max(w) / np.min(w)))
         # _, idx = np.unique(label_list, return_index=True)
         # weights = softmax(1 - softmax(feat_list, axis=1), axis=1)
         # weights = [softmax(weights[idx[i], i]) for i in range(len(idx))]
@@ -382,16 +262,30 @@ def cluster_data_weighted(feat_list, label_list, n_clusters, diff_c):
         # counts = counts/np.sum(counts)
         # sample_num = counts*sample_num
         # groups.append(np.concatenate([np.random.choice(idx[i], int(sample_num[i]), p=weights[i]) for i in range(len(idx))]))
-        groups.append(np.random.choice(np.arange(label_list.shape[0]), int(sample_num), p=w))
+        group = np.random.choice(np.arange(label_list.shape[0]), int(sample_num), p=w)
+        groups.append(group)
+        rank_means.append(float(np.mean(rank_u[group])))
+        rank_histograms.append(rank_histogram(rank_u[group]))
+    log_weighted_cluster_diagnostics(
+        probability_ratios,
+        rank_means,
+        rank_histograms,
+        mu,
+        uncertainty,
+        subset_sigma,
+    )
     centers = [np.mean(feat_list[groups[i]], axis=0) for i in range(n_clusters)]
     # 按与聚类中心的距离再次分组
-    distances = np.zeros((feat_list.shape[0], n_clusters))
+    sampled_indices = np.unique(np.concatenate(groups))
+    sampled_features = feat_list[sampled_indices]
+    distances = np.zeros((sampled_features.shape[0], n_clusters))
     for i in range(n_clusters):
-        distances[:, i] = np.linalg.norm(feat_list - centers[i], axis=1)
+        distances[:, i] = np.linalg.norm(sampled_features - centers[i], axis=1)
 
-    # 将每个样本分配到距离最近的聚类中心
+    # 仅将已采样样本分配到距离最近的聚类中心，未采样样本不进入 true_groups。
     nearest_cluster = np.argmin(distances, axis=1)
-    true_groups = [np.where(nearest_cluster == i)[0] for i in range(n_clusters)]
+    true_groups = [sampled_indices[nearest_cluster == i] for i in range(n_clusters)]
+    log_group_overlap_diagnostics(groups, true_groups)
     # groups_weights = [np.sum(weights[groups[i]]) for i in range(len(groups))]
     # idx = np.argmax(groups_weights)
     # return groups[idx], centers
@@ -497,8 +391,51 @@ def representative_group_indices(feat_list, group_indices, sample_ratio):
     return group_indices[np.array(chosen_positions)]
 
 
+def uniform_group_indices(group_indices, sample_ratio, seed):
+    group_indices = np.asarray(group_indices)
+    if not 0.0 < sample_ratio < 1.0:
+        raise ValueError('sample_ratio must be greater than 0 and less than 1')
+
+    sample_size = max(1, int(np.ceil(len(group_indices) * sample_ratio)))
+    if len(group_indices) <= sample_size:
+        return group_indices.copy()
+
+    rng = np.random.default_rng(seed)
+    selected_positions = rng.permutation(len(group_indices))[:sample_size]
+    return group_indices[selected_positions]
+
+
 def build_representative_groups(feat_list, groups, sample_ratio):
     return [representative_group_indices(feat_list, group, sample_ratio) for group in groups]
+
+
+def build_uniform_eval_groups(groups, sample_ratio, seed):
+    return [
+        uniform_group_indices(group, sample_ratio, seed + group_id)
+        for group_id, group in enumerate(groups)
+    ]
+
+
+def build_eval_groups(feat_list, groups, sample_ratio, sampling, seed):
+    if sampling == 'representative':
+        return build_representative_groups(feat_list, groups, sample_ratio)
+    if sampling == 'uniform':
+        return build_uniform_eval_groups(groups, sample_ratio, seed)
+    raise ValueError(f'unsupported eval sampling mode: {sampling}')
+
+
+def log_eval_sampling_diagnostics(groups, eval_groups, sample_ratio, sampling, seed):
+    full_sizes = [len(group) for group in groups]
+    eval_sizes = [len(group) for group in eval_groups]
+    logger = logging.getLogger('MFC')
+    logger.info(
+        'MFC eval sampling diagnostics | mode=%s | ratio=%.3g | seed=%s | full sizes=%s | eval sizes=%s',
+        sampling,
+        sample_ratio,
+        seed,
+        full_sizes,
+        eval_sizes,
+    )
 
 
 def build_search_bounds(total_op_num, num_ops, mag_bin, prob_bin, use_prob):
@@ -512,9 +449,10 @@ def build_search_bounds(total_op_num, num_ops, mag_bin, prob_bin, use_prob):
 
 
 def build_search_tasks(groups, num_ops, n_dims, lb, ub, use_bayes):
-    eval_func = evalFuncBayes if use_bayes else evalFunc
+    if not use_bayes:
+        raise ValueError('legacy non-Bayes MFC search was removed; enable --bayes')
     var_dim = num_ops * n_dims
-    return [SingleTask(var_dim, lb, ub, [0] * var_dim, eval_func) for _ in range(len(groups))]
+    return [SingleTask(var_dim, lb, ub, [0] * var_dim, evalFuncBayes) for _ in range(len(groups))]
 
 
 def build_mfc_params(
@@ -533,7 +471,10 @@ def build_mfc_params(
     prob_bin,
 ):
     eval_sample_ratio = getattr(args, 'mfc_eval_sample_ratio', 0.2)
-    eval_groups = build_representative_groups(feat_list, groups, eval_sample_ratio)
+    eval_sampling = getattr(args, 'mfc_eval_sampling', 'representative')
+    eval_sample_seed = getattr(args, 'mfc_eval_sample_seed', 0)
+    eval_groups = build_eval_groups(feat_list, groups, eval_sample_ratio, eval_sampling, eval_sample_seed)
+    log_eval_sampling_diagnostics(groups, eval_groups, eval_sample_ratio, eval_sampling, eval_sample_seed)
     return {
         'feat_extractor': model,
         'data_list': data_list,
@@ -594,6 +535,13 @@ def run_policy_search(args, tasks, options, params, writer):
 
     if args.bayes:
         best_topk = resolve_bayes_topk_count(args.bayes_topk, args.bayes_max_eval)
+        if getattr(args, 'policy_pool_source', 'search') == 'random':
+            best_policy = random_policy_pool_for_tasks(
+                task_count=len(tasks),
+                args=args,
+                policy_count=best_topk,
+            )
+            return best_policy, None
         best_policy = bayesian_optimization_tasks_parallel(
             tasks,
             args,
@@ -630,7 +578,14 @@ def MFCAugment(model, resize_size, data_list, label_list, args, n_clusters, mag_
     total_op_num = len(augmentation_space())
     feat_batches, cls_batches = getdatafeat(args, resize_size, data_list, model)
     feat_list, cls_list = combine_feature_batches(feat_batches, cls_batches, use_gpu=args.gpu)
-    groups, centers, true_groups = cluster_data_weighted(cls_list, label_list, n_clusters, diff_c=args.diff_c)
+    groups, centers, true_groups = cluster_data_weighted(
+        cls_list,
+        label_list,
+        n_clusters,
+        diff_c=args.diff_c,
+        uncertainty=args.uncertainty,
+        subset_sigma=args.subset_sigma,
+    )
     centers = []
     feat_list, pca = reduce_features(args, feat_list)
     lb, ub, n_dims, var_dim = build_search_bounds(total_op_num, num_ops, mag_bin, prob_bin, args.use_prob)
@@ -768,7 +723,34 @@ def resolve_bayes_topk_count(topk_ratio_value, max_evals):
     return max(1, int(np.ceil(topk_ratio_value * max_evals)))
 
 
+def random_policy_trial(rng, args, total_op_num):
+    policy = {
+        'op_index': rng.integers(0, total_op_num, size=(1, args.num_ops)),
+        'magnitude_index': rng.integers(0, args.mag_bin - 1, size=(1, args.num_ops)),
+        'prob_index': [],
+    }
+    if args.use_prob:
+        policy['prob_index'] = rng.integers(0, args.prob_bin - 1, size=(1, args.num_ops))
+    return {'policy': policy, 'loss': 0.0}
+
+
+def random_policy_pool_for_tasks(task_count, args, policy_count):
+    from core.augmentations_fastaa import augment_list
+
+    rng = np.random.default_rng(getattr(args, 'policy_pool_seed', 0))
+    total_op_num = len(augment_list())
+    return [
+        merge_trial_policies(
+            [random_policy_trial(rng, args, total_op_num) for _ in range(policy_count)],
+            args.use_prob,
+        )
+        for _ in range(task_count)
+    ]
+
+
 def select_final_trial_history(trial_history, args, params, topk):
+    if topk >= len(trial_history):
+        return trial_history
     if getattr(args, 'reevaluate_full_groups', True):
         return reevaluate_top_policies_with_full_groups(trial_history, params, topk)
     if topk <= 0:

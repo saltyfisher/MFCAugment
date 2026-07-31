@@ -73,7 +73,14 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     assert args.resize is True
     assert args.mfc is False
     assert args.mfc_eval_sample_ratio == pytest.approx(0.2)
+    assert args.mfc_eval_sampling == "representative"
+    assert args.mfc_eval_sample_seed == 0
     assert args.bayes_topk == pytest.approx(0.1)
+    assert args.policy_pool_source == "search"
+    assert args.policy_pool_seed == 0
+    assert args.mfc_refresh_interval == 40
+    assert args.uncertainty == "entropy"
+    assert args.subset_sigma == pytest.approx(0.15)
 
 
 def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
@@ -83,11 +90,73 @@ def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
     assert args.mfc_eval_sample_ratio == pytest.approx(0.25)
 
 
+def test_parser_accepts_mfc_eval_sampling_mode_and_seed(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--mfc_eval_sampling", "uniform", "--mfc_eval_sample_seed", "13"])
+
+    assert args.mfc_eval_sampling == "uniform"
+    assert args.mfc_eval_sample_seed == 13
+
+
+def test_parser_rejects_invalid_mfc_eval_sampling_mode(train_mfc):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--mfc_eval_sampling", "stratified"])
+
+
+def test_parser_accepts_uncertainty_and_subset_sigma(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--uncertainty", "product", "--subset_sigma", "0.2"])
+
+    assert args.uncertainty == "product"
+    assert args.subset_sigma == pytest.approx(0.2)
+
+
+def test_parser_rejects_invalid_uncertainty_and_subset_sigma(train_mfc):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--uncertainty", "unknown"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--subset_sigma", "0"])
+
+
 def test_parser_accepts_bayes_topk_ratio(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args(["--bayes_topk", "0.25"])
 
     assert args.bayes_topk == pytest.approx(0.25)
+
+
+def test_parser_accepts_random_policy_pool_source(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--policy_pool_source", "random", "--policy_pool_seed", "17"])
+
+    assert args.policy_pool_source == "random"
+    assert args.policy_pool_seed == 17
+
+
+def test_parser_accepts_mfc_refresh_interval(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--mfc_refresh_interval", "20"])
+
+    assert args.mfc_refresh_interval == 20
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_parser_rejects_invalid_mfc_refresh_interval(train_mfc, value):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--mfc_refresh_interval", value])
+
+
+def test_parser_rejects_invalid_policy_pool_source(train_mfc):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--policy_pool_source", "tpe"])
 
 
 @pytest.mark.parametrize("ratio", ["0", "1.2", "-0.1"])
@@ -145,9 +214,23 @@ def test_parse_parameter_test_values_converts_supported_types(train_mfc):
         pytest.approx(0.1),
         pytest.approx(0.5),
     ]
+    assert train_mfc.parse_parameter_test_values("mfc_eval_sampling", ["representative", "uniform"]) == [
+        "representative",
+        "uniform",
+    ]
+    assert train_mfc.parse_parameter_test_values("policy_pool_source", ["search", "random"]) == [
+        "search",
+        "random",
+    ]
     assert train_mfc.parse_parameter_test_values("group", ["false", "true"]) == [False, True]
     assert train_mfc.parse_parameter_test_values("diff_c", ["0", "1"]) == [False, True]
     assert train_mfc.parse_parameter_test_values("l", ["1", "3"]) == [1, 3]
+    assert train_mfc.parse_parameter_test_values("mfc_refresh_interval", ["20", "40"]) == [20, 40]
+    assert train_mfc.parse_parameter_test_values("uncertainty", ["entropy", "nll"]) == ["entropy", "nll"]
+    assert train_mfc.parse_parameter_test_values("subset_sigma", ["0.1", "0.2"]) == [
+        pytest.approx(0.1),
+        pytest.approx(0.2),
+    ]
 
 
 def test_parse_parameter_test_values_uses_defaults_when_values_are_omitted(train_mfc):
@@ -167,10 +250,35 @@ def test_get_cluster_count_matches_existing_dataset_rules(train_mfc, dataset, ex
     assert train_mfc.get_cluster_count(dataset) == expected
 
 
+def test_should_refresh_policy_uses_configured_interval_for_online_mode(train_mfc):
+    args = types.SimpleNamespace(online=True, testing=False, mfc_refresh_interval=20)
+
+    assert train_mfc.should_refresh_policy(args, epoch=20, epoch_start=1) is True
+    assert train_mfc.should_refresh_policy(args, epoch=40, epoch_start=1) is True
+    assert train_mfc.should_refresh_policy(args, epoch=21, epoch_start=1) is False
+
+
+def test_should_refresh_policy_keeps_offline_and_testing_start_epoch_behavior(train_mfc):
+    offline_args = types.SimpleNamespace(online=False, testing=False, mfc_refresh_interval=20)
+    testing_args = types.SimpleNamespace(online=True, testing=True, mfc_refresh_interval=20)
+
+    assert train_mfc.should_refresh_policy(offline_args, epoch=1, epoch_start=1) is True
+    assert train_mfc.should_refresh_policy(offline_args, epoch=20, epoch_start=1) is False
+    assert train_mfc.should_refresh_policy(testing_args, epoch=1, epoch_start=1) is True
+    assert train_mfc.should_refresh_policy(testing_args, epoch=20, epoch_start=1) is False
+
+
 def test_resolve_device_uses_cpu_when_gpu_is_disabled(train_mfc):
     args = types.SimpleNamespace(gpu=False, device=0)
 
     assert train_mfc.resolve_device(args).type == "cpu"
+
+
+def test_build_idx_to_group_rejects_overlapping_groups(train_mfc):
+    with pytest.raises(ValueError):
+        train_mfc.build_idx_to_group([[0, 1], [1, 2]], require_disjoint=True)
+
+    assert train_mfc.build_idx_to_group([[0, 1], [1, 2]], require_disjoint=False)[1] == 1
 
 
 def test_run_epoch_applies_group_policy_per_sample_and_resets_each_batch(train_mfc):
@@ -201,6 +309,37 @@ def test_run_epoch_applies_group_policy_per_sample_and_resets_each_batch(train_m
 
     assert calls == [0, 1, 0, 1]
     assert metrics["loss"] >= 0
+    assert metrics["unaugmented_ratio"] == pytest.approx(0.0)
+
+
+def test_run_epoch_keeps_unassigned_group_samples_unaugmented(train_mfc):
+    torch = train_mfc.torch
+    calls = []
+
+    def make_policy(policy_id):
+        def apply(image):
+            calls.append(policy_id)
+            return train_mfc.transforms.ToTensor()(image)
+        return apply
+
+    batches = [
+        (torch.rand(2, 3, 4, 4), torch.tensor([0, 1]), torch.tensor([0, 1])),
+    ]
+    model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(3 * 4 * 4, 2))
+
+    metrics = train_mfc.run_epoch(
+        model,
+        batches,
+        torch.nn.CrossEntropyLoss(),
+        optimizer=None,
+        policy=[make_policy(0), make_policy(1)],
+        groups={0: 1},
+        args=types.SimpleNamespace(group=True),
+    )
+
+    assert calls == [1]
+    assert metrics["loss"] >= 0
+    assert metrics["unaugmented_ratio"] == pytest.approx(0.5)
 
 
 def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):

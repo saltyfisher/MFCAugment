@@ -38,6 +38,20 @@ def sample_ratio(value):
     return ratio
 
 
+def positive_float(value):
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError('value must be greater than 0')
+    return parsed
+
+
+def positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError('value must be greater than 0')
+    return parsed
+
+
 def topk_ratio(value):
     ratio = float(value)
     if not 0.0 < ratio <= 1.0:
@@ -60,18 +74,59 @@ def parse_bool_value(value):
     raise argparse.ArgumentTypeError(f'invalid boolean value: {value}')
 
 
-SUPPORTED_PARAMETER_TESTS = ('mfc_eval_sample_ratio', 'group', 'diff_c', 'l')
+def parse_uncertainty_value(value):
+    value = str(value)
+    if value not in {'entropy', 'nll', 'product'}:
+        raise argparse.ArgumentTypeError(f'invalid uncertainty metric: {value}')
+    return value
+
+
+def parse_eval_sampling_value(value):
+    value = str(value)
+    if value not in {'representative', 'uniform'}:
+        raise argparse.ArgumentTypeError(f'invalid eval sampling mode: {value}')
+    return value
+
+
+def parse_policy_pool_source(value):
+    value = str(value)
+    if value not in {'search', 'random'}:
+        raise argparse.ArgumentTypeError(f'invalid policy pool source: {value}')
+    return value
+
+
+SUPPORTED_PARAMETER_TESTS = (
+    'mfc_eval_sample_ratio',
+    'mfc_eval_sampling',
+    'policy_pool_source',
+    'group',
+    'diff_c',
+    'l',
+    'mfc_refresh_interval',
+    'uncertainty',
+    'subset_sigma',
+)
 PARAMETER_TEST_DEFAULT_VALUES = {
     'mfc_eval_sample_ratio': [0.1, 0.2, 0.5],
+    'mfc_eval_sampling': ['representative', 'uniform'],
+    'policy_pool_source': ['search', 'random'],
     'group': [False, True],
     'diff_c': [False, True],
     'l': [1, 2, 5],
+    'mfc_refresh_interval': [20, 40, 80],
+    'uncertainty': ['entropy', 'nll', 'product'],
+    'subset_sigma': [0.1, 0.15, 0.2],
 }
 PARAMETER_TEST_CONVERTERS = {
     'mfc_eval_sample_ratio': sample_ratio,
+    'mfc_eval_sampling': parse_eval_sampling_value,
+    'policy_pool_source': parse_policy_pool_source,
     'group': parse_bool_value,
     'diff_c': parse_bool_value,
     'l': int,
+    'mfc_refresh_interval': positive_int,
+    'uncertainty': parse_uncertainty_value,
+    'subset_sigma': positive_float,
 }
 
 
@@ -121,14 +176,28 @@ def build_parser():
     parser.add_argument('--bayes_topk', type=topk_ratio, default=0.1,
                         help='贝叶斯优化候选策略复评比例，取值范围为(0, 1]')
     parser.add_argument('--bayes_rep', type=int, default=2, help='贝叶斯优化重复次数')
+    parser.add_argument('--policy_pool_source', type=parse_policy_pool_source, default='search',
+                        help='策略池来源：search 使用目标函数搜索，random 使用同规模均匀随机策略池')
+    parser.add_argument('--policy_pool_seed', type=int, default=0,
+                        help='均匀随机策略池的随机种子')
     parser.add_argument('--reevaluate_full_groups', type=parse_bool_value, default=True,
                         help='Bayes搜索结束后是否对top-k策略做全样本复评')
     parser.add_argument('--no_reevaluate_full_groups', dest='reevaluate_full_groups', action='store_false',
                         help='关闭Bayes top-k策略的全样本复评')
     parser.add_argument('--mfc_eval_sample_ratio', type=sample_ratio, default=0.2,
                         help='Bayes搜索阶段每个子集使用的代表样本比例，取值范围为(0, 1)')
+    parser.add_argument('--mfc_eval_sampling', type=parse_eval_sampling_value, default='representative',
+                        help='Bayes搜索阶段评估子集采样方式')
+    parser.add_argument('--mfc_eval_sample_seed', type=int, default=0,
+                        help='Bayes搜索阶段均匀评估子采样随机种子')
+    parser.add_argument('--mfc_refresh_interval', type=positive_int, default=40,
+                        help='在线MFC策略刷新周期；默认40个epoch')
     parser.add_argument('--group', action='store_true', help='每个数据子集是否单独适配增广策略')
     parser.add_argument('--diff_c', action='store_true', help='每个数据子集的中心点是否不同')
+    parser.add_argument('--uncertainty', type=parse_uncertainty_value, default='entropy',
+                        help='构造难度子集使用的不确定性度量')
+    parser.add_argument('--subset_sigma', type=positive_float, default=0.15,
+                        help='秩空间子集采样高斯带宽')
     parser.add_argument('--l', type=int, default=1, help='目标函数权重')
     parser.add_argument('--mag_bin', type=int, default=31, help='变换操作强度离散个数')
     parser.add_argument('--prob_bin', type=int, default=10, help='变换概率离散个数')
@@ -155,13 +224,16 @@ def should_refresh_policy(args, epoch, epoch_start):
         return epoch == epoch_start
     if args.testing:
         return epoch == epoch_start
-    return epoch % 40 == 0
+    return epoch % args.mfc_refresh_interval == 0
 
 
-def build_idx_to_group(groups):
+def build_idx_to_group(groups, require_disjoint=True):
     idx_to_group = {}
     for group_idx, group_members in enumerate(groups):
         for idx in group_members:
+            idx = int(idx)
+            if require_disjoint and idx in idx_to_group:
+                raise ValueError(f'sample index {idx} appears in multiple groups')
             idx_to_group[idx] = group_idx
     return idx_to_group
 
@@ -206,7 +278,7 @@ def refresh_mfc_policy(model, resize_size, data_list, label_list, args):
     assignment_groups = true_group if args.group else groups
     return (
         build_policy_transforms(policy_subset, resize_size, args),
-        build_idx_to_group(assignment_groups),
+        build_idx_to_group(assignment_groups, require_disjoint=args.group),
         policy_subset,
     )
 
@@ -262,8 +334,12 @@ def build_save_name(args):
                 f'rep{format_name_value(args.bayes_rep)}',
                 f'ratio{format_name_value(args.mfc_eval_sample_ratio)}',
             ])
+            if args.policy_pool_source != 'search':
+                parts.append(f'pool{args.policy_pool_source}')
+                add_non_default_part(parts, args, 'policy_pool_seed', 0, 'poolseed')
             if not getattr(args, 'reevaluate_full_groups', True):
                 parts.append('nofullreeval')
+        add_non_default_part(parts, args, 'mfc_refresh_interval', 40, 'refresh')
         if args.group:
             parts.append('group')
         if args.diff_c:
@@ -451,6 +527,8 @@ def run_epoch(model, loader, loss_fn, optimizer, policy, groups, args):
     train_loss = 0.0
     all_labels = []
     all_preds = []
+    skipped_augmentations = 0
+    augmentation_candidates = 0
     for batch in loader:
         if groups == []:
             data, label = batch[:2]
@@ -458,9 +536,14 @@ def run_epoch(model, loader, loss_fn, optimizer, policy, groups, args):
             augmented_batch = []
             for data, label, data_idx in zip(*batch):
                 if args.group:
-                    p_idx = groups.get(int(data_idx), 0)
+                    p_idx = groups.get(int(data_idx))
+                    if p_idx is None:
+                        skipped_augmentations += 1
+                        augmented_batch.append(data)
+                        continue
                 else:
                     p_idx = np.random.randint(0, len(policy))
+                augmentation_candidates += 1
                 augmented_batch.append(policy[p_idx](ToPILImage()(data)))
             data = torch.stack(augmented_batch)
             label = batch[1]
@@ -496,6 +579,18 @@ def run_epoch(model, loader, loss_fn, optimizer, policy, groups, args):
     metrics['recall'] = recall
     metrics['precision'] = precision
     metrics['f1'] = f1
+    metrics['unaugmented_ratio'] = (
+        skipped_augmentations / (skipped_augmentations + augmentation_candidates)
+        if skipped_augmentations + augmentation_candidates > 0
+        else 0.0
+    )
+    if skipped_augmentations:
+        logger.info(
+            'MFC augmentation skipped for %d/%d samples without group assignment (ratio %.4f)',
+            skipped_augmentations,
+            skipped_augmentations + augmentation_candidates,
+            metrics['unaugmented_ratio'],
+        )
 
     return metrics
 
@@ -561,6 +656,7 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 'BestPolicy':policy
             }, str(save_path.joinpath(save_name+'.pth')))   
         if args.mfc and should_refresh_policy(args, epoch, epoch_start):
+            refresh_start = time.time()
             optimal_policy, idx_to_group, policy_subset = refresh_mfc_policy(
                 model,
                 resize_size,
@@ -568,6 +664,8 @@ def train_val(model, optimizer, num_classes, args, itrs, dataroot, save_path=Non
                 label_list,
                 args,
             )
+            refresh_elapsed = time.time() - refresh_start
+            logger.info('MFC policy refresh at epoch %d took %.2fs', epoch, refresh_elapsed)
             if policy_subset == []:
                 continue
             policy.append(policy_subset)

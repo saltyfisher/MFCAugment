@@ -4,6 +4,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,17 +43,23 @@ def test_build_search_bounds_with_probability_dimension():
     assert ub.tolist() == [15, 15, 30, 30, 9, 9]
 
 
-def test_build_search_tasks_selects_eval_function_by_mode():
+def test_build_search_tasks_selects_bayes_eval_function():
     lb = np.array([0, 0, 0, 0])
     ub = np.array([1, 1, 1, 1])
     groups = [np.array([0, 1]), np.array([2, 3])]
 
-    normal_tasks = mfc.build_search_tasks(groups, num_ops=2, n_dims=2, lb=lb, ub=ub, use_bayes=False)
     bayes_tasks = mfc.build_search_tasks(groups, num_ops=2, n_dims=2, lb=lb, ub=ub, use_bayes=True)
 
-    assert [task.dims for task in normal_tasks] == [4, 4]
-    assert all(task.evalfnc is mfc.evalFunc for task in normal_tasks)
+    assert [task.dims for task in bayes_tasks] == [4, 4]
     assert all(task.evalfnc is mfc.evalFuncBayes for task in bayes_tasks)
+
+
+def test_build_search_tasks_rejects_removed_legacy_non_bayes_path():
+    lb = np.array([0, 0, 0, 0])
+    ub = np.array([1, 1, 1, 1])
+
+    with pytest.raises(ValueError, match="legacy non-Bayes MFC search was removed"):
+        mfc.build_search_tasks([np.array([0, 1])], num_ops=2, n_dims=2, lb=lb, ub=ub, use_bayes=False)
 
 
 def test_combine_feature_batches_matches_gpu_and_cpu_paths():
@@ -72,6 +79,133 @@ def test_combine_feature_batches_matches_gpu_and_cpu_paths():
 def test_get_pca_component_count_matches_dataset_rule():
     assert mfc.get_pca_component_count("breakhis", feature_dim=200) == 10
     assert mfc.get_pca_component_count("chestct", feature_dim=200) == 2
+
+
+def test_uncertainty_scores_support_configured_metrics():
+    probabilities = np.array([[0.7, 0.3], [0.5, 0.5]])
+    labels = np.array([0, 1])
+
+    entropy = mfc.uncertainty_scores(probabilities, labels, "entropy")
+    nll = mfc.uncertainty_scores(probabilities, labels, "nll")
+    product = mfc.uncertainty_scores(probabilities, labels, "product")
+
+    np.testing.assert_allclose(entropy, [0.6108643, 0.69314718], rtol=1e-6)
+    np.testing.assert_allclose(nll, [-np.log(0.7), -np.log(0.5)], rtol=1e-6)
+    np.testing.assert_allclose(product, entropy * nll, rtol=1e-6)
+
+
+def test_cluster_data_weighted_uses_rank_space_kernel(monkeypatch):
+    probabilities = np.array([
+        [0.99, 0.01],
+        [0.90, 0.10],
+        [0.70, 0.30],
+        [0.52, 0.48],
+        [0.51, 0.49],
+        [0.50, 0.50],
+    ])
+    labels = np.zeros(6, dtype=int)
+    recorded_probabilities = []
+    original_choice = np.random.choice
+
+    def recording_choice(values, size=None, replace=True, p=None):
+        if p is not None and size is not None:
+            recorded_probabilities.append(np.asarray(p))
+        return original_choice(values, size=size, replace=replace, p=p)
+
+    monkeypatch.setattr(np.random, "choice", recording_choice)
+    np.random.seed(3)
+
+    groups, centers, true_groups = mfc.cluster_data_weighted(
+        probabilities,
+        labels,
+        n_clusters=2,
+        diff_c=True,
+        uncertainty="entropy",
+        subset_sigma=0.15,
+    )
+
+    kernel_probabilities = recorded_probabilities[-2:]
+    assert len(groups) == 2
+    assert len(centers) == 2
+    assert len(true_groups) == 2
+    assert all(probabilities.max() / probabilities.min() > 10 for probabilities in kernel_probabilities)
+
+
+def test_rank_histogram_counts_values_in_fixed_bins():
+    assert mfc.rank_histogram(np.array([0.1, 0.2, 0.95]), bins=5) == [1, 1, 0, 0, 1]
+
+
+def test_pairwise_iou_reports_overlap_between_all_group_pairs():
+    groups = [np.array([0, 1, 2]), np.array([2, 3]), np.array([4])]
+
+    np.testing.assert_allclose(mfc.pairwise_iou(groups), [0.25, 0.0, 0.0])
+
+
+def test_cluster_data_weighted_assigns_only_sampled_indices(monkeypatch):
+    probabilities = np.array([
+        [0.99, 0.01],
+        [0.80, 0.20],
+        [0.55, 0.45],
+        [0.50, 0.50],
+    ])
+    labels = np.zeros(4, dtype=int)
+    choices = [
+        np.array([0, 3]),
+        np.array([0, 1]),
+        np.array([1, 2]),
+    ]
+
+    def fake_choice(values, size=None, replace=True, p=None):
+        return choices.pop(0)
+
+    monkeypatch.setattr(np.random, "choice", fake_choice)
+
+    groups, centers, true_groups = mfc.cluster_data_weighted(
+        probabilities,
+        labels,
+        n_clusters=2,
+        diff_c=True,
+        uncertainty="entropy",
+        subset_sigma=0.15,
+    )
+
+    sampled = set(np.unique(np.concatenate(groups)).tolist())
+    assigned = set(np.concatenate(true_groups).tolist())
+    assert sampled == {0, 1, 2}
+    assert assigned == sampled
+    assert 3 not in assigned
+
+
+def test_cluster_data_weighted_emits_overlap_diagnostics(monkeypatch):
+    probabilities = np.array([
+        [0.99, 0.01],
+        [0.80, 0.20],
+        [0.55, 0.45],
+        [0.50, 0.50],
+    ])
+    labels = np.zeros(4, dtype=int)
+    choices = [
+        np.array([0, 3]),
+        np.array([0, 1]),
+        np.array([1, 2]),
+    ]
+    seen = []
+
+    monkeypatch.setattr(np.random, "choice", lambda values, size=None, replace=True, p=None: choices.pop(0))
+    monkeypatch.setattr(mfc, "log_group_overlap_diagnostics", lambda groups, true_groups: seen.append((groups, true_groups)))
+
+    mfc.cluster_data_weighted(
+        probabilities,
+        labels,
+        n_clusters=2,
+        diff_c=True,
+        uncertainty="entropy",
+        subset_sigma=0.15,
+    )
+
+    assert len(seen) == 1
+    assert len(seen[0][0]) == 2
+    assert len(seen[0][1]) == 2
 
 
 def test_build_mfc_params_keeps_expected_contract():
@@ -132,6 +266,37 @@ def test_representative_group_indices_mix_center_middle_and_boundary():
     assert set(sampled_groups[0].tolist()) == {2, 4, 5, 7, 9}
 
 
+def test_uniform_eval_groups_are_seeded_and_nested_by_ratio():
+    groups = [np.arange(10)]
+
+    small = mfc.build_eval_groups(
+        feat_list=np.arange(10, dtype=float).reshape(10, 1),
+        groups=groups,
+        sample_ratio=0.2,
+        sampling="uniform",
+        seed=7,
+    )
+    large = mfc.build_eval_groups(
+        feat_list=np.arange(10, dtype=float).reshape(10, 1),
+        groups=groups,
+        sample_ratio=0.5,
+        sampling="uniform",
+        seed=7,
+    )
+    repeated = mfc.build_eval_groups(
+        feat_list=np.arange(10, dtype=float).reshape(10, 1),
+        groups=groups,
+        sample_ratio=0.5,
+        sampling="uniform",
+        seed=7,
+    )
+
+    assert len(small[0]) == 2
+    assert len(large[0]) == 5
+    assert small[0].tolist() == large[0][:2].tolist()
+    assert repeated[0].tolist() == large[0].tolist()
+
+
 def test_build_mfc_params_includes_representative_groups_when_requested():
     args = SimpleNamespace(batch_size=8, mfc_eval_sample_ratio=0.5)
     groups = [np.arange(10)]
@@ -156,50 +321,34 @@ def test_build_mfc_params_includes_representative_groups_when_requested():
     assert params["full_groups"] == groups
 
 
-def test_process_policy_loads_augmentation_and_loss_dependencies(monkeypatch):
-    class FakeAugment:
-        def __init__(self, policy, num_ops):
-            self.policy = policy
-            self.num_ops = num_ops
-
-        def __call__(self, data):
-            return data
-
-    class FakePCA:
-        def transform(self, value):
-            return value
-
-    augmentations = types.ModuleType("core.augmentations")
-    augmentations.MyAugment = FakeAugment
-    utils = types.ModuleType("core.utils")
-    utils.KL_loss = lambda p, q: float(np.asarray(q).sum())
-    utils.kl_divergence_multivariate_torch = lambda p, q: torch.as_tensor(q).sum()
-
-    monkeypatch.setitem(sys.modules, "core.augmentations", augmentations)
-    monkeypatch.setitem(sys.modules, "core.utils", utils)
-    monkeypatch.setattr(
-        mfc,
-        "getdatafeat",
-        lambda args, resize_size, data_list, model: ([torch.tensor([[1.0, 2.0]])], None),
+def test_build_mfc_params_can_use_uniform_eval_groups():
+    args = SimpleNamespace(
+        batch_size=8,
+        mfc_eval_sample_ratio=0.5,
+        mfc_eval_sampling="uniform",
+        mfc_eval_sample_seed=11,
     )
-
-    args = SimpleNamespace(gpu=False, device="cpu", resize=True)
-    loss = mfc.process_policy(
-        (
-            {"op_index": np.array([[0]])},
-            [torch.tensor([1.0])],
-            args,
-            1,
-            (224, 224),
-            "model",
-            FakePCA(),
-            np.array([[0.0, 0.0], [3.0, 4.0]]),
-            [np.array([0])],
-            0,
-        )
+    groups = [np.arange(10)]
+    params = mfc.build_mfc_params(
+        model="model",
+        data_list=list(range(10)),
+        feat_list=np.arange(10, dtype=float).reshape(10, 1),
+        groups=groups,
+        centers=[],
+        pca="pca",
+        lb=np.array([0]),
+        ub=np.array([1]),
+        args=args,
+        resize_size=(224, 224),
+        num_ops=1,
+        mag_bin=31,
+        prob_bin=10,
     )
+    expected = mfc.build_uniform_eval_groups(groups, sample_ratio=0.5, seed=11)
 
-    assert loss == 0.0
+    assert params["eval_groups"][0].tolist() == expected[0].tolist()
+    assert params["eval_group"][0].tolist() == expected[0].tolist()
+    assert params["full_groups"] == groups
 
 
 def test_eval_func_bayes_uses_representative_eval_groups(monkeypatch):
@@ -373,6 +522,7 @@ def test_select_final_trial_history_skips_full_group_reevaluation_when_disabled(
 def test_select_final_trial_history_uses_full_group_reevaluation_by_default(monkeypatch):
     trial_history = [
         {"policy": {"op_index": np.array([[0]])}, "loss": 0.1},
+        {"policy": {"op_index": np.array([[2]])}, "loss": 0.2},
     ]
     selected_history = [{"policy": {"op_index": np.array([[1]])}, "loss": 0.05}]
     calls = []
@@ -387,11 +537,32 @@ def test_select_final_trial_history_uses_full_group_reevaluation_by_default(monk
         trial_history,
         args=SimpleNamespace(),
         params={"groups": [np.array([0])]},
-        topk=3,
+        topk=1,
     )
 
     assert selected == selected_history
-    assert calls == [(trial_history, {"groups": [np.array([0])]}, 3)]
+    assert calls == [(trial_history, {"groups": [np.array([0])]}, 1)]
+
+
+def test_select_final_trial_history_skips_reevaluation_when_topk_covers_all(monkeypatch):
+    trial_history = [
+        {"policy": {"op_index": np.array([[0]])}, "loss": 0.1},
+        {"policy": {"op_index": np.array([[1]])}, "loss": 0.2},
+    ]
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("full-group reevaluation should be skipped")
+
+    monkeypatch.setattr(mfc, "reevaluate_top_policies_with_full_groups", fail_if_called)
+
+    selected = mfc.select_final_trial_history(
+        trial_history,
+        args=SimpleNamespace(),
+        params={"groups": [np.array([0])]},
+        topk=2,
+    )
+
+    assert selected == trial_history
 
 
 def test_resolve_bayes_topk_count_uses_ratio_of_max_evals():
@@ -428,11 +599,47 @@ def test_run_policy_search_passes_derived_bayes_topk(monkeypatch):
     assert captured == {"rep": 2, "topk": 10, "max_evals": 40}
 
 
+def test_run_policy_search_can_build_random_policy_pool(monkeypatch):
+    augmentations_fastaa = types.ModuleType("core.augmentations_fastaa")
+    augmentations_fastaa.augment_list = lambda: ["op0", "op1", "op2"]
+    monkeypatch.setitem(sys.modules, "core.augmentations_fastaa", augmentations_fastaa)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("search should be skipped for random policy pools")
+
+    monkeypatch.setattr(mfc, "bayesian_optimization_tasks_parallel", fail_if_called)
+
+    result, skill_factor = mfc.run_policy_search(
+        args=SimpleNamespace(
+            multitask=False,
+            bayes=True,
+            bayes_rep=2,
+            bayes_topk=0.5,
+            bayes_max_eval=4,
+            policy_pool_source="random",
+            policy_pool_seed=3,
+            num_ops=2,
+            mag_bin=5,
+            prob_bin=4,
+            use_prob=False,
+        ),
+        tasks=["task0", "task1"],
+        options={},
+        params={},
+        writer=[],
+    )
+
+    assert skill_factor is None
+    assert len(result) == 2
+    assert all(policy["op_index"].shape[1] == 2 for policy in result)
+    assert all(len(policy["magnitude_index"]) >= 1 for policy in result)
+
+
 def test_bayesian_parallel_passes_independent_params_per_task(monkeypatch):
     seen = []
 
     def fake_single_task(task_idx, args, task, params, rep, topk, max_evals):
-        seen.append((task_idx, id(params), params["task_id"]))
+        seen.append((task_idx, params, params["task_id"]))
         params["local_mutation"] = task_idx
         return {"task": task_idx}, task_idx, 0.0, float(task_idx)
 
@@ -452,7 +659,7 @@ def test_bayesian_parallel_passes_independent_params_per_task(monkeypatch):
     assert results == [{"task": 0}, {"task": 1}]
     assert [entry[0] for entry in seen] == [0, 1]
     assert [entry[2] for entry in seen] == [0, 1]
-    assert len({entry[1] for entry in seen}) == 2
+    assert seen[0][1] is not seen[1][1]
     assert "task_id" not in params
     assert "local_mutation" not in params
 
@@ -498,8 +705,8 @@ def test_sample_weight_centers_uses_one_center_unless_diff_c_enabled(monkeypatch
     shared = mfc.sample_weight_centers(weights, center_count=3, diff_c=False)
     distinct = mfc.sample_weight_centers(weights, center_count=3, diff_c=True)
 
-    assert shared.tolist() == [0.1, 0.1, 0.1]
-    assert distinct.tolist() == [0.1, 0.2, 0.3]
+    assert shared.tolist() == [0, 0, 0]
+    assert distinct.tolist() == [0, 1, 2]
 
 
 def test_cluster_data_weighted_handles_high_confidence_probabilities():
@@ -519,4 +726,4 @@ def test_cluster_data_weighted_handles_high_confidence_probabilities():
     )
 
     assert len(groups) == len(centers) == len(true_groups) == 2
-    assert set(np.concatenate(true_groups)) == set(range(len(labels)))
+    assert set(np.concatenate(true_groups)) == set(np.unique(np.concatenate(groups)))
