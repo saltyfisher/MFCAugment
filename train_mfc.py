@@ -102,6 +102,72 @@ def parse_mfc_eval_metric(value):
     return value
 
 
+SUPPORTED_DATASETS = ('chestct', 'breakhis', 'corona')
+BREAKHIS_MAGNIFICATIONS = ('40', '100', '200', '400')
+DEFAULT_BREAKHIS_MAGNIFICATION = '40'
+
+
+def parse_dataset_value(value):
+    value = str(value).lower()
+    if value not in SUPPORTED_DATASETS:
+        raise argparse.ArgumentTypeError(f'invalid dataset: {value}')
+    return value
+
+
+def parse_magnification_value(value):
+    if value is None:
+        return None
+    value = str(value)
+    if value.lower() in {'none', 'null'}:
+        return None
+    if value not in BREAKHIS_MAGNIFICATIONS:
+        raise argparse.ArgumentTypeError(f'invalid BreakHis magnification: {value}')
+    return value
+
+
+def as_list(value):
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def resolve_dataset_magnification_pairs(datasets, magnifications):
+    datasets = as_list(datasets)
+    magnifications = as_list(magnifications)
+    non_empty_magnifications = [value for value in magnifications if value is not None]
+    has_breakhis = any(dataset == 'breakhis' for dataset in datasets)
+    if non_empty_magnifications and not has_breakhis:
+        raise ValueError('magnification can only be used when dataset includes breakhis')
+
+    breakhis_magnifications = (
+        non_empty_magnifications
+        if non_empty_magnifications
+        else [DEFAULT_BREAKHIS_MAGNIFICATION]
+    )
+    pairs = []
+    seen = set()
+    for dataset in datasets:
+        if dataset == 'breakhis':
+            candidate_pairs = [('breakhis', magnification) for magnification in breakhis_magnifications]
+        else:
+            candidate_pairs = [(dataset, None)]
+        for pair in candidate_pairs:
+            if pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+    return pairs
+
+
+def expand_dataset_magnification_args(args):
+    variants = []
+    for dataset, magnification in resolve_dataset_magnification_pairs(args.dataset, args.magnification):
+        variant_args = argparse.Namespace(**vars(args))
+        variant_args.dataset = dataset
+        variant_args.magnification = magnification
+        variants.append(variant_args)
+    return variants
+
+
 SUPPORTED_PARAMETER_TESTS = (
     'mfc_eval_sample_ratio',
     'mfc_eval_sampling',
@@ -162,9 +228,10 @@ def build_parser():
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD优化器的动量')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='权重衰减系数')
     parser.add_argument('--strategy', type=str, default='', help='训练策略')
-    parser.add_argument('--dataset', type=str, default='chestct', help='数据集类型')
-    parser.add_argument('--magnification', type=str, default=None, choices=['40', '100', '200', '400', None],
-                        help='BreakHis数据集的放大倍数，None表示使用所有倍数')
+    parser.add_argument('--dataset', type=parse_dataset_value, nargs='+', default=['chestct'], help='数据集类型')
+    parser.add_argument('--magnification', type=parse_magnification_value, nargs='+', default=[None],
+                        choices=list(BREAKHIS_MAGNIFICATIONS) + [None],
+                        help='BreakHis数据集的放大倍数，未指定时默认使用40X')
     parser.add_argument('--test_split', type=float, default=0.2, help='BreakHis数据集的测试集比例')
     parser.add_argument('--num_trials', type=int, default=10, help='独立实验次数')
     parser.add_argument('--device', type=int, default=0, help='GPU设备号')
@@ -196,7 +263,7 @@ def build_parser():
                         help='关闭Bayes top-k策略的全样本复评')
     parser.add_argument('--mfc_eval_sample_ratio', type=sample_ratio, default=0.2,
                         help='Bayes搜索阶段每个子集使用的代表样本比例，取值范围为(0, 1)')
-    parser.add_argument('--mfc_eval_sampling', type=parse_eval_sampling_value, default='representative',
+    parser.add_argument('--mfc_eval_sampling', type=parse_eval_sampling_value, default='uniform',
                         help='Bayes搜索阶段评估子集采样方式')
     parser.add_argument('--mfc_eval_metric', type=parse_mfc_eval_metric, default='kl',
                         help='Bayes搜索阶段增广数据分布评估函数：kl或mmd')
@@ -773,7 +840,33 @@ def run_parameter_sensitivity(args):
     return records
 
 
+def run_dataset_magnification_variants(args):
+    records = []
+    for variant_args in expand_dataset_magnification_args(args):
+        label = variant_args.dataset
+        if variant_args.magnification is not None:
+            label = f'{label}:{variant_args.magnification}'
+        print(f"\n{'='*50}")
+        print(f"数据集实验: {label}")
+        print(f"{'='*50}")
+        result = (
+            run_parameter_sensitivity(variant_args)
+            if variant_args.param_test
+            else run_trials(variant_args)
+        )
+        records.append({
+            'dataset': variant_args.dataset,
+            'magnification': variant_args.magnification,
+            'result': result,
+        })
+    return records
+
+
 def main(args):
+    expanded_args = expand_dataset_magnification_args(args)
+    if len(expanded_args) > 1:
+        return run_dataset_magnification_variants(args)
+    args = expanded_args[0]
     if args.param_test:
         return run_parameter_sensitivity(args)
     return run_trials(args)
@@ -782,4 +875,9 @@ def main(args):
 if __name__ == '__main__':
     # mp.set_start_method('spawn')
     # patch_sklearn()
-    main(build_parser().parse_args())
+    parser = build_parser()
+    cli_args = parser.parse_args()
+    try:
+        main(cli_args)
+    except ValueError as exc:
+        parser.error(str(exc))

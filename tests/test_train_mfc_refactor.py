@@ -64,7 +64,8 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args([])
 
-    assert args.dataset == "chestct"
+    assert args.dataset == ["chestct"]
+    assert args.magnification == [None]
     assert args.model == "resnet18"
     assert args.batch_size == 32
     assert args.num_epochs == 180
@@ -73,7 +74,7 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     assert args.resize is True
     assert args.mfc is False
     assert args.mfc_eval_sample_ratio == pytest.approx(0.2)
-    assert args.mfc_eval_sampling == "representative"
+    assert args.mfc_eval_sampling == "uniform"
     assert args.mfc_eval_sample_seed == 0
     assert args.bayes_topk == pytest.approx(0.1)
     assert args.policy_pool_source == "search"
@@ -97,6 +98,23 @@ def test_parser_accepts_mfc_eval_sampling_mode_and_seed(train_mfc):
 
     assert args.mfc_eval_sampling == "uniform"
     assert args.mfc_eval_sample_seed == 13
+
+
+def test_parser_accepts_dataset_and_magnification_values(train_mfc):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--dataset", "chestct", "breakhis", "--magnification", "40", "100"])
+
+    assert args.dataset == ["chestct", "breakhis"]
+    assert args.magnification == ["40", "100"]
+
+
+def test_parser_rejects_invalid_dataset_and_magnification_values(train_mfc):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--dataset", "unknown"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--magnification", "800"])
 
 
 def test_parser_accepts_mfc_eval_metric(train_mfc):
@@ -253,6 +271,44 @@ def test_parse_parameter_test_values_uses_defaults_when_values_are_omitted(train
     assert train_mfc.parse_parameter_test_values("group", None) == [False, True]
 
 
+def test_resolve_dataset_magnification_pairs_matches_breakhis_only(train_mfc):
+    assert train_mfc.resolve_dataset_magnification_pairs(
+        ["chestct", "breakhis", "corona"],
+        ["40", "100"],
+    ) == [
+        ("chestct", None),
+        ("breakhis", "40"),
+        ("breakhis", "100"),
+        ("corona", None),
+    ]
+    assert train_mfc.resolve_dataset_magnification_pairs(["breakhis"], [None]) == [
+        ("breakhis", "40"),
+    ]
+    assert train_mfc.resolve_dataset_magnification_pairs(["chestct"], [None]) == [
+        ("chestct", None),
+    ]
+
+    with pytest.raises(ValueError, match="magnification can only be used"):
+        train_mfc.resolve_dataset_magnification_pairs(["chestct"], ["40"])
+
+
+def test_expand_dataset_magnification_args_returns_normalized_variants(train_mfc):
+    args = types.SimpleNamespace(
+        dataset=["chestct", "breakhis"],
+        magnification=["200"],
+        param_test="",
+        param_values=None,
+    )
+
+    variants = train_mfc.expand_dataset_magnification_args(args)
+
+    assert [(variant.dataset, variant.magnification) for variant in variants] == [
+        ("chestct", None),
+        ("breakhis", "200"),
+    ]
+    assert all(variant is not args for variant in variants)
+
+
 @pytest.mark.parametrize(
     ("dataset", "expected"),
     [
@@ -386,6 +442,7 @@ def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):
             "--testing",
         ]
     )
+    args = train_mfc.expand_dataset_magnification_args(args)[0]
 
     output = train_mfc.prepare_output_config(args)
 
@@ -403,6 +460,7 @@ def test_prepare_output_config_builds_parameterized_names_and_paths(train_mfc):
 def test_build_save_name_marks_disabled_full_group_reevaluation(train_mfc):
     parser = train_mfc.build_parser()
     args = parser.parse_args(["--mfc", "--bayes", "--reevaluate_full_groups", "false"])
+    args = train_mfc.expand_dataset_magnification_args(args)[0]
 
     assert "nofullreeval" in train_mfc.build_save_name(args)
 
@@ -476,6 +534,27 @@ def test_run_parameter_sensitivity_varies_one_parameter_at_a_time(train_mfc, mon
     assert records[0]["stats"]["accuracy"]["mean"] == "0.6000"
     assert records[1]["stats"]["accuracy"]["mean"] == "0.8000"
     assert written == {"param_name": "group", "values": [False, True]}
+
+
+def test_main_runs_each_dataset_magnification_variant(train_mfc, monkeypatch):
+    parser = train_mfc.build_parser()
+    args = parser.parse_args(["--dataset", "chestct", "breakhis", "--magnification", "100", "200"])
+    calls = []
+
+    def fake_run_trials(variant_args):
+        calls.append((variant_args.dataset, variant_args.magnification))
+        return [{"accuracy": 0.8, "f1": 0.7}]
+
+    monkeypatch.setattr(train_mfc, "run_trials", fake_run_trials)
+
+    records = train_mfc.main(args)
+
+    assert calls == [
+        ("chestct", None),
+        ("breakhis", "100"),
+        ("breakhis", "200"),
+    ]
+    assert [(record["dataset"], record["magnification"]) for record in records] == calls
 
 
 def test_refresh_mfc_policy_uses_true_groups_for_group_assignment(train_mfc, monkeypatch):
@@ -555,9 +634,11 @@ def test_build_stats_csv_path_uses_parameterized_save_name(train_mfc):
             "0.5",
         ]
     )
+    mfc_args = train_mfc.expand_dataset_magnification_args(mfc_args)[0]
     assert train_mfc.build_stats_csv_path(mfc_args) == Path(
         "result/breakhis_0p2_40X_mfc_resnet18_bayes_eval100_topk0p1_rep2_ratio0p5_group_diffc.csv"
     )
 
     strategy_args = parser.parse_args(["--dataset", "chestct", "--strategy", "randaugment"])
+    strategy_args = train_mfc.expand_dataset_magnification_args(strategy_args)[0]
     assert train_mfc.build_stats_csv_path(strategy_args) == Path("result/chestct_0p2_randaugment_resnet18.csv")
