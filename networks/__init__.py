@@ -96,6 +96,8 @@ def num_class(dataset):
         'chestct':4,
         'EndoscopicBladder':4,
         'corona':7,
+        'cifar-fs':100,
+        'miniimagenet':100,
         'kvasir-dataset':8,
         'PAD-UFES-20':6
     }[dataset]

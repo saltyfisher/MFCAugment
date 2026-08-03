@@ -102,9 +102,9 @@ def test_parser_accepts_mfc_eval_sampling_mode_and_seed(train_mfc):
 
 def test_parser_accepts_dataset_and_magnification_values(train_mfc):
     parser = train_mfc.build_parser()
-    args = parser.parse_args(["--dataset", "chestct", "breakhis", "--magnification", "40", "100"])
+    args = parser.parse_args(["--dataset", "chestct", "breakhis", "cifar-fs", "miniimagenet", "--magnification", "40", "100"])
 
-    assert args.dataset == ["chestct", "breakhis"]
+    assert args.dataset == ["chestct", "breakhis", "cifar-fs", "miniimagenet"]
     assert args.magnification == ["40", "100"]
 
 
@@ -273,19 +273,25 @@ def test_parse_parameter_test_values_uses_defaults_when_values_are_omitted(train
 
 def test_resolve_dataset_magnification_pairs_matches_breakhis_only(train_mfc):
     assert train_mfc.resolve_dataset_magnification_pairs(
-        ["chestct", "breakhis", "corona"],
+        ["chestct", "breakhis", "corona", "cifar-fs", "miniimagenet"],
         ["40", "100"],
     ) == [
         ("chestct", None),
         ("breakhis", "40"),
         ("breakhis", "100"),
         ("corona", None),
+        ("cifar-fs", None),
+        ("miniimagenet", None),
     ]
     assert train_mfc.resolve_dataset_magnification_pairs(["breakhis"], [None]) == [
         ("breakhis", "40"),
     ]
     assert train_mfc.resolve_dataset_magnification_pairs(["chestct"], [None]) == [
         ("chestct", None),
+    ]
+    assert train_mfc.resolve_dataset_magnification_pairs(["cifar-fs", "miniimagenet"], [None]) == [
+        ("cifar-fs", None),
+        ("miniimagenet", None),
     ]
 
     with pytest.raises(ValueError, match="magnification can only be used"):
@@ -314,6 +320,8 @@ def test_expand_dataset_magnification_args_returns_normalized_variants(train_mfc
     [
         ("lymphoma", 2),
         ("breakhis", 8),
+        ("cifar-fs", 10),
+        ("miniimagenet", 10),
         ("chestct", 4),
         ("unknown", 4),
     ],

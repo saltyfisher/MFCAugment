@@ -102,7 +102,7 @@ def parse_mfc_eval_metric(value):
     return value
 
 
-SUPPORTED_DATASETS = ('chestct', 'breakhis', 'corona')
+SUPPORTED_DATASETS = ('chestct', 'breakhis', 'corona', 'cifar-fs', 'miniimagenet')
 BREAKHIS_MAGNIFICATIONS = ('40', '100', '200', '400')
 DEFAULT_BREAKHIS_MAGNIFICATION = '40'
 
@@ -293,6 +293,8 @@ def get_cluster_count(dataset):
         return 2
     if 'breakhis' in dataset:
         return 8
+    if dataset in {'cifar-fs', 'miniimagenet'}:
+        return 10
     if 'chestct' in dataset:
         return 4
     return 4
