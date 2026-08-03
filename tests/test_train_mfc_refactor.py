@@ -252,6 +252,11 @@ def test_parse_parameter_test_values_converts_supported_types(train_mfc):
         "uniform",
     ]
     assert train_mfc.parse_parameter_test_values("mfc_eval_metric", ["kl", "mmd"]) == ["kl", "mmd"]
+    assert train_mfc.parse_parameter_test_values("bayes_topk", ["0.2", "0.5", "1"]) == [
+        pytest.approx(0.2),
+        pytest.approx(0.5),
+        pytest.approx(1.0),
+    ]
     assert train_mfc.parse_parameter_test_values("policy_pool_source", ["search", "random"]) == [
         "search",
         "random",
@@ -269,6 +274,11 @@ def test_parse_parameter_test_values_converts_supported_types(train_mfc):
 
 def test_parse_parameter_test_values_uses_defaults_when_values_are_omitted(train_mfc):
     assert train_mfc.parse_parameter_test_values("group", None) == [False, True]
+    assert train_mfc.parse_parameter_test_values("bayes_topk", None) == [
+        pytest.approx(0.2),
+        pytest.approx(0.5),
+        pytest.approx(1.0),
+    ]
 
 
 def test_resolve_dataset_magnification_pairs_matches_breakhis_only(train_mfc):

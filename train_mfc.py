@@ -179,6 +179,7 @@ SUPPORTED_PARAMETER_TESTS = (
     'mfc_refresh_interval',
     'uncertainty',
     'subset_sigma',
+    'bayes_topk',
 )
 PARAMETER_TEST_DEFAULT_VALUES = {
     'mfc_eval_sample_ratio': [0.1, 0.2, 0.5],
@@ -191,6 +192,7 @@ PARAMETER_TEST_DEFAULT_VALUES = {
     'mfc_refresh_interval': [20, 40, 80],
     'uncertainty': ['entropy', 'nll', 'product'],
     'subset_sigma': [0.1, 0.15, 0.2],
+    'bayes_topk': [0.2, 0.5, 1],
 }
 PARAMETER_TEST_CONVERTERS = {
     'mfc_eval_sample_ratio': sample_ratio,
@@ -203,6 +205,7 @@ PARAMETER_TEST_CONVERTERS = {
     'mfc_refresh_interval': positive_int,
     'uncertainty': parse_uncertainty_value,
     'subset_sigma': positive_float,
+    'bayes_topk': topk_ratio,
 }
 
 
