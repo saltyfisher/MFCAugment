@@ -84,7 +84,7 @@ def get_dataset_roots(dataroot, dataset, magnification):
         return root / 'train', root / 'test'
     if dataset == 'cifar-fs':
         candidates = [
-            dataroot / 'cifar-fs' / 'cifar100' / 'data',
+            dataroot / 'cifar-fs' / 'data',
             dataroot / 'cifar100' / 'data',
         ]
         if dataroot.name.lower() == 'cifar-fs':
