@@ -31,6 +31,47 @@ def test_data_import_does_not_require_cv2_or_gco(monkeypatch):
     assert data.get_resize_size("miniimagenet") == (84, 84)
 
 
+def test_natural_image_datasets_use_dataset_normalization(monkeypatch):
+    import data
+
+    class FakeTransforms:
+        class Resize:
+            def __init__(self, size):
+                self.size = size
+
+        class ToTensor:
+            pass
+
+        class Normalize:
+            def __init__(self, mean, std):
+                self.mean = mean
+                self.std = std
+
+        class Compose:
+            def __init__(self, transforms):
+                self.transforms = transforms
+
+    monkeypatch.setattr(data, "load_transforms", lambda: FakeTransforms)
+
+    cifar_transform = data.build_base_transform((32, 32), "cifar-fs")
+    mini_transform = data.build_base_transform((84, 84), "miniimagenet")
+    medical_transform = data.build_base_transform((224, 224), "chestct")
+
+    cifar_normalize = cifar_transform.transforms[-1]
+    mini_normalize = mini_transform.transforms[-1]
+
+    assert cifar_normalize.__class__.__name__ == "Normalize"
+    assert cifar_normalize.mean == pytest.approx((0.5071, 0.4867, 0.4408))
+    assert cifar_normalize.std == pytest.approx((0.2675, 0.2565, 0.2761))
+    assert mini_normalize.__class__.__name__ == "Normalize"
+    assert mini_normalize.mean == pytest.approx((0.485, 0.456, 0.406))
+    assert mini_normalize.std == pytest.approx((0.229, 0.224, 0.225))
+    assert [step.__class__.__name__ for step in medical_transform.transforms] == [
+        "Resize",
+        "ToTensor",
+    ]
+
+
 def test_augmentations_import_does_not_require_cv2_or_gco(monkeypatch):
     monkeypatch.setitem(sys.modules, "cv2", None)
     monkeypatch.setitem(sys.modules, "gco", None)
@@ -149,7 +190,7 @@ def test_get_data_reads_few_shot_imagefolder_dataset_from_resolved_root(tmp_path
         captured["split"] = (train_transform, test_transform, test_split, random_state)
         return "train-dataset", "test-dataset"
 
-    monkeypatch.setattr(data, "build_transforms", lambda strategy, resize_size: ("train-transform", "test-transform"))
+    monkeypatch.setattr(data, "build_transforms", lambda strategy, resize_size, dataset=None: ("train-transform", "test-transform"))
     monkeypatch.setattr(data, "Mydata", FakeDataset)
     monkeypatch.setattr(data, "split_imagefolder_train_test", fake_split)
 

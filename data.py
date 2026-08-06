@@ -3,6 +3,16 @@ from pathlib import Path
 
 FEW_SHOT_IMAGEFOLDER_DATASETS = {'cifar-fs', 'miniimagenet'}
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.ppm', '.pgm', '.tif', '.tiff', '.webp'}
+NATURAL_IMAGE_NORMALIZE_STATS = {
+    'cifar-fs': {
+        'mean': (0.5071, 0.4867, 0.4408),
+        'std': (0.2675, 0.2565, 0.2761),
+    },
+    'miniimagenet': {
+        'mean': (0.485, 0.456, 0.406),
+        'std': (0.229, 0.224, 0.225),
+    },
+}
 
 
 def get_resize_size(dataset):
@@ -13,6 +23,10 @@ def get_resize_size(dataset):
     if dataset == 'miniimagenet':
         return (84, 84)
     return (224, 224)
+
+
+def get_normalize_stats(dataset):
+    return NATURAL_IMAGE_NORMALIZE_STATS.get(dataset)
 
 
 def load_transforms():
@@ -92,18 +106,22 @@ def get_dataset_roots(dataroot, dataset, magnification):
     raise ValueError(f'Unsupported dataset: {dataset}')
 
 
-def build_base_transform(resize_size):
+def build_base_transform(resize_size, dataset=None):
     transforms = load_transforms()
-    return transforms.Compose([
+    steps = [
         transforms.Resize(resize_size),
         transforms.ToTensor(),
-    ])
+    ]
+    normalize_stats = get_normalize_stats(dataset)
+    if normalize_stats is not None:
+        steps.append(transforms.Normalize(normalize_stats['mean'], normalize_stats['std']))
+    return transforms.Compose(steps)
 
 
-def build_transforms(strategy, resize_size):
+def build_transforms(strategy, resize_size, dataset=None):
     transforms = load_transforms()
-    train_transform = build_base_transform(resize_size)
-    test_transform = build_base_transform(resize_size)
+    train_transform = build_base_transform(resize_size, dataset)
+    test_transform = build_base_transform(resize_size, dataset)
 
     if strategy == 'randaugment':
         from torchvision.transforms.autoaugment import RandAugment
@@ -242,7 +260,7 @@ def split_imagefolder_train_test(full_dataset, train_transform, test_transform, 
 
 def get_data(strategy, dataset, magnification, dataroot, random_state=42, test_split=0.3, validation=False, validation_folds=5):
     resize_size = get_resize_size(dataset)
-    train_transform, test_transform = build_transforms(strategy, resize_size)
+    train_transform, test_transform = build_transforms(strategy, resize_size, dataset)
 
     if 'breakhis' in dataset:
         root_dir, _ = get_dataset_roots(dataroot, dataset, magnification)
