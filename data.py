@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 FEW_SHOT_IMAGEFOLDER_DATASETS = {'cifar-fs', 'miniimagenet'}
+RANDOM_SPLIT_IMAGEFOLDER_DATASETS = FEW_SHOT_IMAGEFOLDER_DATASETS | {'pad-ufes-20'}
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.ppm', '.pgm', '.tif', '.tiff', '.webp'}
 NATURAL_IMAGE_NORMALIZE_STATS = {
     'cifar-fs': {
@@ -22,6 +23,8 @@ def get_resize_size(dataset):
         return (32, 32)
     if dataset == 'miniimagenet':
         return (84, 84)
+    if dataset == 'pad-ufes-20':
+        return (320, 320)
     return (224, 224)
 
 
@@ -52,6 +55,16 @@ def looks_like_imagefolder_root(path):
 def first_existing_imagefolder_root(candidates, fallback):
     for candidate in candidates:
         if looks_like_imagefolder_root(candidate):
+            return candidate, None
+    return fallback, None
+
+
+def first_existing_multiclass_imagefolder_root(candidates, fallback, min_classes=2):
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        class_dirs = [child for child in candidate.iterdir() if child.is_dir() and contains_image_files(child)]
+        if len(class_dirs) >= min_classes:
             return candidate, None
     return fallback, None
 
@@ -103,6 +116,26 @@ def get_dataset_roots(dataroot, dataset, magnification):
         if dataroot.name.lower() == 'data' and dataroot.parent.name.lower() == 'miniimagenet':
             candidates.append(dataroot)
         return first_existing_imagefolder_root(candidates, dataroot / 'miniimagenet' / 'data')
+    if dataset == 'pad-ufes-20':
+        direct_train = dataroot / 'train'
+        direct_test = dataroot / 'test'
+        if direct_train.is_dir() and direct_test.is_dir():
+            return direct_train, direct_test
+
+        dataset_root = dataroot / 'PAD-UFES-20'
+        if (dataset_root / 'train').is_dir() and (dataset_root / 'test').is_dir():
+            return dataset_root / 'train', dataset_root / 'test'
+
+        candidates = [
+            dataroot / 'PAD-UFES-20' / 'organized_dataset',
+            dataroot / 'organized_dataset',
+            dataroot / 'PAD-UFES-20',
+            dataroot,
+        ]
+        return first_existing_multiclass_imagefolder_root(
+            candidates,
+            dataroot / 'PAD-UFES-20' / 'organized_dataset',
+        )
     raise ValueError(f'Unsupported dataset: {dataset}')
 
 
@@ -297,12 +330,16 @@ def get_data(strategy, dataset, magnification, dataroot, random_state=42, test_s
             )
             return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
 
-    elif dataset in FEW_SHOT_IMAGEFOLDER_DATASETS:
-        root_dir, _ = get_dataset_roots(dataroot, dataset, magnification)
-        full_dataset = Mydata(root=str(root_dir), transform=train_transform)
-        traintest_dataset, test_dataset = split_imagefolder_train_test(
-            full_dataset, train_transform, test_transform, test_split, random_state
-        )
+    elif dataset in RANDOM_SPLIT_IMAGEFOLDER_DATASETS:
+        train_root, test_root = get_dataset_roots(dataroot, dataset, magnification)
+        if test_root is None:
+            full_dataset = Mydata(root=str(train_root), transform=train_transform)
+            traintest_dataset, test_dataset = split_imagefolder_train_test(
+                full_dataset, train_transform, test_transform, test_split, random_state
+            )
+        else:
+            traintest_dataset = Mydata(str(train_root), transform=train_transform)
+            test_dataset = Mydata(str(test_root), transform=test_transform)
 
         if validation:
             full_traintest_dataset, trainval_datasets, val_datasets = split_train_val_dataset(

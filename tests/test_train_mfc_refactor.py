@@ -126,9 +126,19 @@ def test_parser_accepts_mfc_eval_sampling_mode_and_seed(train_mfc):
 
 def test_parser_accepts_dataset_and_magnification_values(train_mfc):
     parser = train_mfc.build_parser()
-    args = parser.parse_args(["--dataset", "chestct", "breakhis", "cifar-fs", "miniimagenet", "--magnification", "40", "100"])
+    args = parser.parse_args([
+        "--dataset",
+        "chestct",
+        "breakhis",
+        "cifar-fs",
+        "miniimagenet",
+        "PAD-UFES-20",
+        "--magnification",
+        "40",
+        "100",
+    ])
 
-    assert args.dataset == ["chestct", "breakhis", "cifar-fs", "miniimagenet"]
+    assert args.dataset == ["chestct", "breakhis", "cifar-fs", "miniimagenet", "pad-ufes-20"]
     assert args.magnification == ["40", "100"]
 
 
@@ -307,7 +317,7 @@ def test_parse_parameter_test_values_uses_defaults_when_values_are_omitted(train
 
 def test_resolve_dataset_magnification_pairs_matches_breakhis_only(train_mfc):
     assert train_mfc.resolve_dataset_magnification_pairs(
-        ["chestct", "breakhis", "corona", "cifar-fs", "miniimagenet"],
+        ["chestct", "breakhis", "corona", "cifar-fs", "miniimagenet", "pad-ufes-20"],
         ["40", "100"],
     ) == [
         ("chestct", None),
@@ -316,6 +326,7 @@ def test_resolve_dataset_magnification_pairs_matches_breakhis_only(train_mfc):
         ("corona", None),
         ("cifar-fs", None),
         ("miniimagenet", None),
+        ("pad-ufes-20", None),
     ]
     assert train_mfc.resolve_dataset_magnification_pairs(["breakhis"], [None]) == [
         ("breakhis", "40"),
@@ -326,6 +337,9 @@ def test_resolve_dataset_magnification_pairs_matches_breakhis_only(train_mfc):
     assert train_mfc.resolve_dataset_magnification_pairs(["cifar-fs", "miniimagenet"], [None]) == [
         ("cifar-fs", None),
         ("miniimagenet", None),
+    ]
+    assert train_mfc.resolve_dataset_magnification_pairs(["pad-ufes-20"], [None]) == [
+        ("pad-ufes-20", None),
     ]
 
     with pytest.raises(ValueError, match="magnification can only be used"):
@@ -386,6 +400,32 @@ def test_resolve_device_uses_cpu_when_gpu_is_disabled(train_mfc):
     args = types.SimpleNamespace(gpu=False, device=0)
 
     assert train_mfc.resolve_device(args).type == "cpu"
+
+
+def test_create_pretrained_model_replaces_linear_head(train_mfc, monkeypatch):
+    torch = train_mfc.torch
+    captured = {}
+
+    class FakeWeights:
+        DEFAULT = "default-weights"
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = torch.nn.Linear(8, 1000)
+
+    def fake_resnet18(weights):
+        captured["weights"] = weights
+        return FakeModel()
+
+    monkeypatch.setattr(train_mfc.torchvision.models, "ResNet18_Weights", FakeWeights, raising=False)
+    monkeypatch.setattr(train_mfc.models, "resnet18", fake_resnet18, raising=False)
+
+    model = train_mfc.create_pretrained_model("resnet18", 6)
+
+    assert captured["weights"] == "default-weights"
+    assert model.fc.in_features == 8
+    assert model.fc.out_features == 6
 
 
 def test_build_idx_to_group_rejects_overlapping_groups(train_mfc):

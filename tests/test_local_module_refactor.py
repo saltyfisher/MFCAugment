@@ -29,6 +29,7 @@ def test_data_import_does_not_require_cv2_or_gco(monkeypatch):
     assert data.get_resize_size("chestct") == (224, 224)
     assert data.get_resize_size("cifar-fs") == (32, 32)
     assert data.get_resize_size("miniimagenet") == (84, 84)
+    assert data.get_resize_size("pad-ufes-20") == (320, 320)
 
 
 def test_natural_image_datasets_use_dataset_normalization(monkeypatch):
@@ -173,6 +174,39 @@ def test_few_shot_imagefolder_roots_accept_repo_and_direct_directories(tmp_path)
     assert data.get_dataset_roots(mini_root, "miniimagenet", None) == (mini_root, None)
 
 
+def test_pad_ufes_roots_accept_organized_and_train_test_directories(tmp_path):
+    import data
+
+    organized_root = tmp_path / "PAD-UFES-20" / "organized_dataset"
+    make_imagefolder(organized_root)
+
+    assert data.get_dataset_roots(tmp_path, "pad-ufes-20", None) == (organized_root, None)
+    assert data.get_dataset_roots(organized_root, "pad-ufes-20", None) == (organized_root, None)
+
+    split_root = tmp_path / "split_pad"
+    make_imagefolder(split_root / "train")
+    make_imagefolder(split_root / "test")
+
+    assert data.get_dataset_roots(split_root, "pad-ufes-20", None) == (
+        split_root / "train",
+        split_root / "test",
+    )
+
+
+def test_pad_ufes_raw_image_directory_is_not_treated_as_class_root(tmp_path):
+    import data
+
+    raw_root = tmp_path / "PAD-UFES-20"
+    (raw_root / "images").mkdir(parents=True)
+    (raw_root / "images" / "sample.png").write_bytes(b"")
+    (raw_root / "metadata.csv").write_text("img_id,diagnostic\nsample.png,BCC\n")
+
+    assert data.get_dataset_roots(tmp_path, "pad-ufes-20", None) == (
+        raw_root / "organized_dataset",
+        None,
+    )
+
+
 def test_get_data_reads_few_shot_imagefolder_dataset_from_resolved_root(tmp_path, monkeypatch):
     import data
 
@@ -249,6 +283,7 @@ def test_num_class_includes_few_shot_datasets():
 
     assert networks.num_class("cifar-fs") == 100
     assert networks.num_class("miniimagenet") == 100
+    assert networks.num_class("pad-ufes-20") == 6
 
 
 def test_mydata_get_labels_uses_imagefolder_targets():

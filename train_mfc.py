@@ -102,10 +102,28 @@ def parse_mfc_eval_metric(value):
     return value
 
 
-SUPPORTED_DATASETS = ('chestct', 'breakhis', 'corona', 'cifar-fs', 'miniimagenet')
+SUPPORTED_DATASETS = ('chestct', 'breakhis', 'corona', 'cifar-fs', 'miniimagenet', 'pad-ufes-20')
 BREAKHIS_MAGNIFICATIONS = ('40', '100', '200', '400')
 DEFAULT_BREAKHIS_MAGNIFICATION = '40'
 SUPPORTED_STRATEGIES = ('', 'randaugment', 'trivialaugment', 'randaugment_raw', 'trivialaugment_raw')
+PRETRAINED_WEIGHT_NAMES = {
+    'resnet18': 'ResNet18_Weights',
+    'resnet34': 'ResNet34_Weights',
+    'resnet50': 'ResNet50_Weights',
+    'resnext': 'ResNeXt50_32X4D_Weights',
+    'vgg16': 'VGG16_Weights',
+    'efficientb0': 'EfficientNet_B0_Weights',
+    'efficientb4': 'EfficientNet_B4_Weights',
+    'efficientb7': 'EfficientNet_B7_Weights',
+    'efficients': 'EfficientNet_V2_S_Weights',
+    'efficientm': 'EfficientNet_V2_M_Weights',
+    'efficientl': 'EfficientNet_V2_L_Weights',
+    'mobiles': 'MobileNet_V3_Small_Weights',
+    'mobilel': 'MobileNet_V3_Large_Weights',
+    'shufflenet': 'ShuffleNet_V2_X1_0_Weights',
+    'shufflenetl': 'ShuffleNet_V2_X2_0_Weights',
+    'googlenet': 'GoogLeNet_Weights',
+}
 
 
 def parse_dataset_value(value):
@@ -480,9 +498,46 @@ def resolve_device(args):
     return torch.device(f'cuda:{args.device}')
 
 
+def default_pretrained_weights(model_name):
+    weight_name = PRETRAINED_WEIGHT_NAMES.get(model_name)
+    if weight_name is None:
+        raise ValueError(f'--pretrain is not supported for model {model_name}')
+    weight_enum = getattr(torchvision.models, weight_name)
+    return weight_enum.DEFAULT
+
+
+def replace_classifier_head(model, num_classes):
+    if hasattr(model, 'fc') and isinstance(model.fc, nn.Linear):
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+        return model
+    if hasattr(model, 'classifier'):
+        classifier = model.classifier
+        if isinstance(classifier, nn.Linear):
+            model.classifier = nn.Linear(classifier.in_features, num_classes)
+            return model
+        if isinstance(classifier, nn.Sequential):
+            for index in range(len(classifier) - 1, -1, -1):
+                layer = classifier[index]
+                if isinstance(layer, nn.Linear):
+                    classifier[index] = nn.Linear(layer.in_features, num_classes)
+                    return model
+    raise ValueError('unable to replace classifier head for pretrained model')
+
+
+def create_pretrained_model(model_name, num_classes):
+    if not hasattr(models, model_name):
+        raise ValueError(f'unknown model: {model_name}')
+    weights = default_pretrained_weights(model_name)
+    model = getattr(models, model_name)(weights=weights)
+    return replace_classifier_head(model, num_classes)
+
+
 def create_model(args):
     num_classes = num_class(args.dataset)
-    model = models.__dict__[args.model](num_classes=num_classes)
+    if getattr(args, 'pretrain', False):
+        model = create_pretrained_model(args.model, num_classes)
+    else:
+        model = models.__dict__[args.model](num_classes=num_classes)
     device = resolve_device(args)
     model.to(device)
     return model, num_classes

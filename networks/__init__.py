@@ -99,7 +99,8 @@ def num_class(dataset):
         'cifar-fs':100,
         'miniimagenet':100,
         'kvasir-dataset':8,
-        'PAD-UFES-20':6
+        'PAD-UFES-20':6,
+        'pad-ufes-20':6
     }[dataset]
 
 # def num_class(dataset):
