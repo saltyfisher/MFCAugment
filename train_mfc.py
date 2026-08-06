@@ -105,6 +105,7 @@ def parse_mfc_eval_metric(value):
 SUPPORTED_DATASETS = ('chestct', 'breakhis', 'corona', 'cifar-fs', 'miniimagenet')
 BREAKHIS_MAGNIFICATIONS = ('40', '100', '200', '400')
 DEFAULT_BREAKHIS_MAGNIFICATION = '40'
+SUPPORTED_STRATEGIES = ('', 'randaugment', 'trivialaugment', 'randaugment_raw', 'trivialaugment_raw')
 
 
 def parse_dataset_value(value):
@@ -230,7 +231,12 @@ def build_parser():
     parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='优化器类型')
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD优化器的动量')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='权重衰减系数')
-    parser.add_argument('--strategy', type=str, default='', help='训练策略')
+    strategy_group = parser.add_mutually_exclusive_group()
+    strategy_group.add_argument('--strategy', type=str, default='', choices=SUPPORTED_STRATEGIES, help='训练策略')
+    strategy_group.add_argument('--randaugment', dest='strategy', action='store_const', const='randaugment',
+                                help='use torchvision RandAugment in the training preprocessing pipeline')
+    strategy_group.add_argument('--trivialaugment', dest='strategy', action='store_const', const='trivialaugment',
+                                help='use torchvision TrivialAugmentWide in the training preprocessing pipeline')
     parser.add_argument('--dataset', type=parse_dataset_value, nargs='+', default=['chestct'], help='数据集类型')
     parser.add_argument('--magnification', type=parse_magnification_value, nargs='+', default=[None],
                         choices=list(BREAKHIS_MAGNIFICATIONS) + [None],

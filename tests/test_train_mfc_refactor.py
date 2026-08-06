@@ -69,6 +69,7 @@ def test_build_parser_preserves_mfc_defaults(train_mfc):
     assert args.model == "resnet18"
     assert args.batch_size == 32
     assert args.num_epochs == 180
+    assert args.strategy == ""
     assert args.num_trials == 10
     assert args.num_ops == 2
     assert args.resize is True
@@ -90,6 +91,29 @@ def test_parser_accepts_mfc_eval_sample_ratio(train_mfc):
     args = parser.parse_args(["--mfc_eval_sample_ratio", "0.25"])
 
     assert args.mfc_eval_sample_ratio == pytest.approx(0.25)
+
+
+def test_parser_accepts_preprocessing_augmentation_switches(train_mfc):
+    parser = train_mfc.build_parser()
+
+    rand_args = parser.parse_args(["--randaugment"])
+    trivial_args = parser.parse_args(["--trivialaugment"])
+    legacy_args = parser.parse_args(["--strategy", "randaugment"])
+
+    assert rand_args.strategy == "randaugment"
+    assert trivial_args.strategy == "trivialaugment"
+    assert legacy_args.strategy == "randaugment"
+
+
+def test_parser_rejects_conflicting_preprocessing_augmentation_switches(train_mfc):
+    parser = train_mfc.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--randaugment", "--trivialaugment"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--strategy", "randaugment", "--trivialaugment"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--strategy", "unknown"])
 
 
 def test_parser_accepts_mfc_eval_sampling_mode_and_seed(train_mfc):
