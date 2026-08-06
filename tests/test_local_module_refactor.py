@@ -193,7 +193,7 @@ def test_pad_ufes_roots_accept_organized_and_train_test_directories(tmp_path):
     )
 
 
-def test_pad_ufes_raw_image_directory_is_not_treated_as_class_root(tmp_path):
+def test_pad_ufes_roots_accept_raw_metadata_directory(tmp_path):
     import data
 
     raw_root = tmp_path / "PAD-UFES-20"
@@ -201,10 +201,65 @@ def test_pad_ufes_raw_image_directory_is_not_treated_as_class_root(tmp_path):
     (raw_root / "images" / "sample.png").write_bytes(b"")
     (raw_root / "metadata.csv").write_text("img_id,diagnostic\nsample.png,BCC\n")
 
-    assert data.get_dataset_roots(tmp_path, "pad-ufes-20", None) == (
-        raw_root / "organized_dataset",
-        None,
+    assert data.get_dataset_roots(tmp_path, "pad-ufes-20", None) == (raw_root, None)
+    assert data.get_dataset_roots(raw_root, "pad-ufes-20", None) == (raw_root, None)
+
+
+def test_pad_ufes_dataset_reads_metadata_samples(tmp_path):
+    import data
+
+    raw_root = tmp_path / "PAD-UFES-20"
+    image_root = raw_root / "images"
+    image_root.mkdir(parents=True)
+    (image_root / "ack.png").write_bytes(b"")
+    (image_root / "mel.png").write_bytes(b"")
+    (raw_root / "metadata.csv").write_text(
+        "img_id,diagnostic\nack.png,ACK\nmel.png,MEL\n",
+        encoding="utf-8",
     )
+
+    dataset = data.PadUfes20Dataset(raw_root, transform=lambda image: f"transformed-{image}", loader=lambda path: Path(path).name)
+
+    assert dataset.classes == ["ACK", "BCC", "MEL", "NEV", "SCC", "SEK"]
+    assert dataset.class_to_idx["ACK"] == 0
+    assert dataset.class_to_idx["MEL"] == 2
+    assert dataset.targets == [0, 2]
+    assert dataset[1] == ("transformed-mel.png", 2, 1)
+
+
+def test_get_data_reads_pad_ufes_from_raw_metadata_directory(tmp_path, monkeypatch):
+    import data
+
+    raw_root = tmp_path / "PAD-UFES-20"
+    image_root = raw_root / "images"
+    image_root.mkdir(parents=True)
+    for class_name in data.PAD_UFES_20_CLASSES:
+        for index in range(2):
+            (image_root / f"{class_name}_{index}.png").write_bytes(b"")
+    (raw_root / "metadata.csv").write_text(
+        "img_id,diagnostic\n"
+        + "\n".join(f"{class_name}_{index}.png,{class_name}" for class_name in data.PAD_UFES_20_CLASSES for index in range(2))
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(data, "build_transforms", lambda strategy, resize_size, dataset=None: ("train-transform", "test-transform"))
+
+    traintest_dataset, test_dataset, resize_size, train_transform = data.get_data(
+        strategy="",
+        dataset="pad-ufes-20",
+        magnification=None,
+        dataroot=tmp_path,
+        random_state=42,
+        test_split=0.5,
+    )
+
+    assert resize_size == (320, 320)
+    assert train_transform == "train-transform"
+    assert len(traintest_dataset) == 6
+    assert len(test_dataset) == 6
+    assert set(traintest_dataset.get_labels()) == set(range(6))
+    assert set(test_dataset.get_labels()) == set(range(6))
 
 
 def test_get_data_reads_few_shot_imagefolder_dataset_from_resolved_root(tmp_path, monkeypatch):

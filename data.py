@@ -1,9 +1,11 @@
+import csv
 from pathlib import Path
 
 
 FEW_SHOT_IMAGEFOLDER_DATASETS = {'cifar-fs', 'miniimagenet'}
-RANDOM_SPLIT_IMAGEFOLDER_DATASETS = FEW_SHOT_IMAGEFOLDER_DATASETS | {'pad-ufes-20'}
+RANDOM_SPLIT_IMAGEFOLDER_DATASETS = FEW_SHOT_IMAGEFOLDER_DATASETS
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.ppm', '.pgm', '.tif', '.tiff', '.webp'}
+PAD_UFES_20_CLASSES = ('ACK', 'BCC', 'MEL', 'NEV', 'SCC', 'SEK')
 NATURAL_IMAGE_NORMALIZE_STATS = {
     'cifar-fs': {
         'mean': (0.5071, 0.4867, 0.4408),
@@ -44,6 +46,12 @@ def load_imagefolder_class():
     return ImageFolder
 
 
+def load_default_image_loader():
+    from torchvision.datasets.folder import default_loader
+
+    return default_loader
+
+
 def contains_image_files(path):
     return any(file.is_file() and file.suffix.lower() in IMAGE_EXTENSIONS for file in path.iterdir())
 
@@ -67,6 +75,10 @@ def first_existing_multiclass_imagefolder_root(candidates, fallback, min_classes
         if len(class_dirs) >= min_classes:
             return candidate, None
     return fallback, None
+
+
+def is_pad_ufes_raw_root(path):
+    return (path / 'metadata.csv').is_file() and (path / 'images').is_dir()
 
 
 def get_dataset_roots(dataroot, dataset, magnification):
@@ -121,10 +133,14 @@ def get_dataset_roots(dataroot, dataset, magnification):
         direct_test = dataroot / 'test'
         if direct_train.is_dir() and direct_test.is_dir():
             return direct_train, direct_test
+        if is_pad_ufes_raw_root(dataroot):
+            return dataroot, None
 
         dataset_root = dataroot / 'PAD-UFES-20'
         if (dataset_root / 'train').is_dir() and (dataset_root / 'test').is_dir():
             return dataset_root / 'train', dataset_root / 'test'
+        if is_pad_ufes_raw_root(dataset_root):
+            return dataset_root, None
 
         candidates = [
             dataroot / 'PAD-UFES-20' / 'organized_dataset',
@@ -188,6 +204,74 @@ class Mydata:
 
     def __len__(self):
         return len(self._dataset)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target, index
+
+    def get_all_files(self, transformer):
+        data_list = [transformer(self.loader(path)) for path, target in self.samples]
+        label_list = self.targets
+        return data_list, label_list
+
+    def get_labels(self):
+        return self.targets
+
+    def update_transform(self, mfc_transform, transform, groups):
+        self.mfc_transform = mfc_transform
+        self.transform = transform
+        self.groups = groups
+
+
+class PadUfes20Dataset:
+    def __init__(self, root, transform=None, target_transform=None, loader=None):
+        self.root = str(root)
+        self.transform = transform
+        self.target_transform = target_transform
+        self.loader = loader or load_default_image_loader()
+        self.classes = list(PAD_UFES_20_CLASSES)
+        self.class_to_idx = {class_name: index for index, class_name in enumerate(self.classes)}
+
+        root = Path(root)
+        metadata_path = root / 'metadata.csv'
+        image_root = root / 'images'
+        if not metadata_path.is_file() or not image_root.is_dir():
+            raise FileNotFoundError(
+                f'PAD-UFES-20 expects metadata.csv and images/ under {root}'
+            )
+
+        self.samples = []
+        with metadata_path.open(newline='', encoding='utf-8-sig') as metadata_file:
+            reader = csv.DictReader(metadata_file)
+            required_columns = {'img_id', 'diagnostic'}
+            missing_columns = required_columns - set(reader.fieldnames or [])
+            if missing_columns:
+                raise ValueError(f'PAD-UFES-20 metadata is missing columns: {sorted(missing_columns)}')
+
+            for row in reader:
+                image_name = row['img_id'].strip()
+                diagnostic = row['diagnostic'].strip().upper()
+                if diagnostic not in self.class_to_idx:
+                    raise ValueError(f'Unsupported PAD-UFES-20 diagnostic label: {diagnostic}')
+                image_path = image_root / image_name
+                if not image_path.is_file():
+                    raise FileNotFoundError(f'PAD-UFES-20 image listed in metadata was not found: {image_path}')
+                self.samples.append((str(image_path), self.class_to_idx[diagnostic]))
+
+        if not self.samples:
+            raise ValueError(f'PAD-UFES-20 metadata has no usable samples: {metadata_path}')
+
+        self.imgs = self.samples
+        self.targets = [target for _, target in self.samples]
+
+    def __len__(self):
+        return len(self.samples)
 
     def __getitem__(self, index):
         path, target = self.samples[index]
@@ -323,6 +407,24 @@ def get_data(strategy, dataset, magnification, dataroot, random_state=42, test_s
         train_root, test_root = get_dataset_roots(dataroot, dataset, magnification)
         traintest_dataset = Mydata(str(train_root), transform=train_transform, allow_empty=True)
         test_dataset = Mydata(str(test_root), transform=test_transform, allow_empty=True)
+
+        if validation:
+            full_traintest_dataset, trainval_datasets, val_datasets = split_train_val_dataset(
+                traintest_dataset, train_transform, test_transform, validation_folds, random_state
+            )
+            return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
+
+    elif dataset == 'pad-ufes-20':
+        train_root, test_root = get_dataset_roots(dataroot, dataset, magnification)
+        if test_root is None:
+            dataset_class = PadUfes20Dataset if is_pad_ufes_raw_root(train_root) else Mydata
+            full_dataset = dataset_class(root=str(train_root), transform=train_transform)
+            traintest_dataset, test_dataset = split_imagefolder_train_test(
+                full_dataset, train_transform, test_transform, test_split, random_state
+            )
+        else:
+            traintest_dataset = Mydata(str(train_root), transform=train_transform)
+            test_dataset = Mydata(str(test_root), transform=test_transform)
 
         if validation:
             full_traintest_dataset, trainval_datasets, val_datasets = split_train_val_dataset(
